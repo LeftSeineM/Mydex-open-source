@@ -6,9 +6,21 @@ import '../models.dart';
 /// Updates use the release site, never the selected computer's API or token.
 class CentralUpdates {
   final Uri origin;
+  final bool preview;
+  static const _feed = String.fromEnvironment('MYDEX_PREVIEW_FEED');
+  String get _directory {
+    if (!RegExp(r'^[a-f0-9]{48}$').hasMatch(_feed)) {
+      throw StateError('私测更新地址未配置');
+    }
+    return '/updates/preview/$_feed';
+  }
+
   final HttpClient client;
-  CentralUpdates({Uri? origin, HttpClient? client})
-      : origin = origin ?? Uri.parse('https://app.leftseinem.dpdns.org'),
+  CentralUpdates({Uri? origin, HttpClient? client, this.preview = false})
+      : origin = origin ??
+            Uri.parse(preview
+                ? 'https://app.leftseinem.com'
+                : 'https://app.leftseinem.dpdns.org'),
         client = client ??
             (HttpClient()..connectionTimeout = const Duration(seconds: 15));
 
@@ -27,16 +39,22 @@ class CentralUpdates {
         url.userInfo.isNotEmpty ||
         url.hasQuery ||
         url.hasFragment ||
-        !RegExp(r'^/downloads/Mydex-[a-zA-Z0-9.+-]+\.apk$')
-            .hasMatch(url.path)) {
+        (preview
+            ? (m['channel'] != 'router-private' ||
+                url.path != '$_directory/Mydex-${m['version']}.apk' ||
+                !RegExp(r'^[0-9]+\.[0-9]+\.[0-9]+-private\.[0-9]+$')
+                    .hasMatch(m['version'] as String))
+            : !RegExp(r'^/downloads/Mydex-[a-zA-Z0-9.+-]+\.apk$')
+                .hasMatch(url.path))) {
       throw const FormatException('更新清单无效，请稍后重试');
     }
     return m;
   }
 
   Future<Json> check() async {
-    final req =
-        await client.getUrl(origin.resolve('/updates/android-stable.json'));
+    final req = await client.getUrl(origin.resolve(preview
+        ? '$_directory/manifest.json'
+        : '/updates/android-stable.json'));
     req.followRedirects = false;
     req.headers.set(HttpHeaders.cacheControlHeader, 'no-cache');
     final res = await req.close().timeout(const Duration(seconds: 30));
