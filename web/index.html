@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#ffffff">
+  <!--
+    If you are serving your web app in a path other than the root, change the
+    href value below to reflect the base path you are serving from.
+
+    The path provided below has to start and end with a slash "/" in order for
+    it to work correctly.
+
+    For more details:
+    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+
+    This is a placeholder for base href that will be replaced by the value of
+    the `--base-href` argument provided to `flutter build`.
+  -->
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="Mydex：连接自己的电脑，继续 AI 对话。">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Mydex">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>Mydex</title>
+  <link rel="manifest" href="manifest.json">
+</head>
+<body>
+  <style>
+    #loading{position:fixed;inset:0;display:grid;place-content:center;justify-items:center;text-align:center;background:#fff;color:#24262a;font:15px/1.8 system-ui,-apple-system,sans-serif;z-index:1}
+    #loading img{width:88px;height:88px;border-radius:23px;animation:mydex-breathe 1.6s ease-in-out infinite}
+    #loading strong{font-size:26px;margin-top:14px;letter-spacing:-.8px}
+    #loading p{color:#77808b;font-size:13px;margin:12px 0 20px}
+    #loading a{font-size:12px}
+    @keyframes mydex-breathe{0%,100%{transform:translateY(0) scale(1);opacity:.85}50%{transform:translateY(-4px) scale(1.025);opacity:1}}
+    @media(prefers-reduced-motion:reduce){#loading img{animation:none}}
+  </style>
+  <div id="loading" role="status" aria-live="polite">
+    <img src="data:image/png;base64,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" alt="" width="88" height="88"><strong>Mydex</strong><p id="loading-message">正在打开你的工作空间…</p>
+    <a href="/connect/" style="color:#41658a">返回账号与电脑列表</a>
+  </div>
+  <script src="/connect/session-guard.js"></script>
+  <script src="mydex-update.js" defer></script>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>

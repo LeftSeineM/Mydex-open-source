@@ -1,0 +1,64 @@
+{
+  "name": "my-harness",
+  "productName": "Mydex",
+  "version": "1.3.0",
+  "description": "Mydex API-only desktop coding workspace.",
+  "author": "Local Developer",
+  "license": "MIT",
+  "main": "dist/main.js",
+  "scripts": {
+    "compile": "tsc -p .",
+    "icon": "node scripts/generate-icon.cjs",
+    "check": "tsc -p . --noEmit",
+    "check:engine": "npm run compile && electron scripts/qa-engine.cjs",
+    "check:host": "npm run compile && electron scripts/qa-host.cjs",
+    "check:ui": "electron scripts/qa-ui.cjs",
+    "start": "npm run compile && electron .",
+    "dev": "npm run compile && electron . --dev",
+    "pack:dir": "npm run compile && electron-builder --dir",
+    "pack:win": "npm run compile && electron-builder --win nsis portable --x64",
+    "pack:portable": "npm run compile && electron-builder --win portable --x64"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "electron": "^43.0.0",
+    "electron-builder": "^26.0.12",
+    "typescript": "^5.9.2"
+  },
+  "build": {
+    "appId": "com.myharness.desktop",
+    "productName": "Mydex",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/main.js", "dist/preload.js", "dist/mydexAppServer.js", "dist/settingsStore.js", "dist/workspaceTools.js", "dist/types.js", "dist/apiModels.js", "dist/folderReferences.js", "dist/permissions.js",
+      "renderer/**/*",
+      "assets/**/*",
+      "package.json",
+      "LICENSE",
+      "THIRD-PARTY-NOTICES.md"
+    ],
+    "extraResources": [{ "from": "D:/Software/MyHarness-build/engine", "to": "engine" }],
+    "win": {
+      "icon": "assets/icon.png",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "include": "scripts/installer.nsh",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Mydex",
+      "artifactName": "Mydex-Setup-${version}-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "Mydex-Portable-${version}-${arch}.${ext}"
+    }
+  }
+}

@@ -1,0 +1,23 @@
+name: mydex_mobile
+description: Private thin client for your own Codex computers.
+publish_to: none
+version: 0.2.22+28
+environment:
+  sdk: '>=3.6.0 <4.0.0'
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_secure_storage: 9.2.4
+  flutter_markdown: 0.7.6+2
+  crypto: ^3.0.5
+  path_provider: ^2.1.5
+dev_dependencies:
+  integration_test:
+    sdk: flutter
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/mesh-notices.txt

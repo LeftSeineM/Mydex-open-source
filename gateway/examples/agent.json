@@ -1,0 +1,6 @@
+{
+  "gateway":"https://YOUR_HOST:18443",
+  "token":"REPLACE_WITH_DIFFERENT_AGENT_TOKEN",
+  "caFile":"D:/Software/MydexMobile/gateway/private/server-cert.pem",
+  "local":{"id":"laptop","dataDir":"D:/Software/MydexMobile/gateway/private/laptop-state","workspace":"D:/Software/MydexMobile/workspace","callerThreadId":"REPLACE_WITH_EXISTING_THREAD_ID","codexExecutable":"D:/Software/YourCodex/codex.exe"}
+}

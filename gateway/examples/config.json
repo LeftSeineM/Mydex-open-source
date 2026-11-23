@@ -1,0 +1,9 @@
+{
+  "host":"0.0.0.0",
+  "port":18443,
+  "token":"REPLACE_WITH_RANDOM_PHONE_TOKEN",
+  "tls":{"key":"D:/Software/MydexMobile/gateway/private/server-key.pem","cert":"D:/Software/MydexMobile/gateway/private/server-cert.pem"},
+  "ledgerFile":"D:/Software/MydexMobile/gateway/private/requests.json",
+  "local":{"id":"mini","dataDir":"D:/Software/MydexMobile/gateway/private/mini-state","workspace":"D:/Software/MydexMobile/workspace","callerThreadId":"REPLACE_WITH_EXISTING_THREAD_ID","codexExecutable":"D:/Software/YourCodex/codex.exe"},
+  "devices":[{"id":"mini","name":"小主机"},{"id":"laptop","name":"我的笔记本","token":"REPLACE_WITH_DIFFERENT_AGENT_TOKEN"}]
+}

@@ -1,0 +1,28 @@
+const assert = require('assert/strict');
+const fs = require('fs/promises');
+const path = require('path');
+const { referenceFolder, prepareFolderPrompt } = require('../dist/folderReferences');
+(async () => {
+  const root = await fs.mkdtemp(path.join(__dirname, '..', 'qa-artifacts', 'folders-'));
+  const project = path.join(root, 'project'), folder = path.join(project, '中文 空格'), outside = path.join(root, 'outside');
+  await fs.mkdir(folder, { recursive: true }); await fs.mkdir(outside);
+  await fs.writeFile(path.join(folder, 'private.txt'), 'DO_NOT_BULK_UPLOAD_CONTENT');
+  const ref = await referenceFolder(project, folder);
+  assert.equal(ref.relativePath, '中文 空格');
+  assert.equal((await referenceFolder(project, project)).relativePath, '.');
+  const prompt = await prepareFolderPrompt(project, '检查这个目录', [ref, ref]);
+  assert.ok(prompt.includes('中文 空格')); assert.ok(prompt.includes('按需'));
+  assert.ok(!prompt.includes('DO_NOT_BULK_UPLOAD_CONTENT')); assert.ok(!prompt.includes('private.txt'));
+  assert.equal((prompt.match(/"type": "directory"/g) || []).length, 1);
+  assert.equal(await prepareFolderPrompt(project, 'original', []), 'original');
+  await assert.rejects(() => referenceFolder(project, path.join(folder, 'private.txt')), /不是文件夹/);
+  await assert.rejects(() => referenceFolder(project, outside), /当前项目/);
+  await assert.rejects(() => prepareFolderPrompt(project, '', Array(21).fill(ref)), /最多 20/);
+  await assert.rejects(() => prepareFolderPrompt(project, '', ['bad']), /格式/);
+  await assert.rejects(() => prepareFolderPrompt(project, '', [{ ...ref, workspace: root }]), /项目已切换/);
+  await fs.symlink(outside, path.join(project, 'junction'), 'junction');
+  await assert.rejects(() => referenceFolder(project, path.join(project, 'junction')), /当前项目/);
+  await fs.rename(folder, folder + '-moved');
+  await assert.rejects(() => prepareFolderPrompt(project, '', [ref]), /不存在/);
+  console.log('PASS folder refs: root/subfolder, Unicode/spaces, paths-only, deduplication, cap/type errors, file/outside/junction rejection, stale workspace, missing directory.');
+})().catch(error => { console.error(error); process.exitCode = 1; });

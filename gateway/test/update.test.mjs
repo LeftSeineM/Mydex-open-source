@@ -1,0 +1,23 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {EventEmitter} from 'node:events';
+import {createGateway} from '../server.mjs';
+test('updates require Bearer and serve only the fixed package',async t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'mydex-update-test-'));
+ fs.writeFileSync(path.join(dir,'manifest.json'),JSON.stringify({versionCode:3,size:3}));
+ fs.writeFileSync(path.join(dir,'update.apk'),'apk');
+ const adapter=new EventEmitter();adapter.dispatch=async()=>({tasks:[]});
+ const token='test-update-token-at-least-24-characters';
+ const {server}=createGateway({local:{id:'main'},devices:[{id:'main'}],token,updateDir:dir},adapter);
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));
+ t.after(()=>{server.closeAllConnections();server.close();});
+ const url='http://127.0.0.1:'+server.address().port;
+ assert.equal((await fetch(url+'/api/update')).status,401);
+ const headers={Authorization:'Bearer '+token};
+ assert.equal((await (await fetch(url+'/api/update',{headers})).json()).versionCode,3);
+ assert.equal(await (await fetch(url+'/api/update/apk',{headers})).text(),'apk');
+ assert.equal((await fetch(url+'/api/update/manifest.json',{headers})).status,404);
+});

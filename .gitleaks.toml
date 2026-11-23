@@ -1,0 +1,7 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Loopback-only TLS fixtures and synthetic test tokens"
+paths = ['''(?:^|/)test/fixtures/mesh-key\.pem$''']
+regexes = ['private-dsh-recovery-test-token-32-characters', 'private-message-test-token-32-characters']
