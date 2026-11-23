@@ -17,6 +17,8 @@ android {
     if (System.getenv('MYDEX_PRIVATE_ARM64_APK') == '1') {
         packagingOptions {
             jniLibs {
+                // Keep over-the-air downloads small on slow relay links.
+                useLegacyPackaging true
                 excludes += ['**/armeabi-v7a/**', '**/x86/**', '**/x86_64/**']
             }
         }
