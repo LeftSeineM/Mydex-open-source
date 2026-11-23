@@ -10,6 +10,8 @@ import 'api_exception.dart';
 import 'web_socket.dart';
 
 class GatewayApi {
+  String? get connectionRoute => null;
+  Future<bool> startP2pTesting() async => false;
   final ConnectionSettings settings;
   GatewayApi(this.settings);
   Uri uri(String path) {

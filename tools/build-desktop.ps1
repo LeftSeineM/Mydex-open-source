@@ -6,13 +6,21 @@ $node=(Resolve-Path -LiteralPath $NodeExe).Path
 $compiler=Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
 if(!(Test-Path $compiler)){throw 'Install the Windows .NET Framework compiler first'}
 if(!(Test-Path "$root/gateway/node_modules/ws")){throw 'Run npm ci in gateway first'}
+& $node --test "$root/gateway/test/tool-wake.test.mjs" "$root/gateway/test/process-lock.test.mjs" "$root/gateway/test/router-engine.test.mjs" "$root/desktop/headless/test/service-lifecycle.test.mjs" "$root/desktop/headless/test/gateway-diagnostics.test.mjs" "$root/gateway/test/tunnel.test.mjs"
+if($LASTEXITCODE){throw 'Connection reliability regression checks failed; not building installer'}
 New-Item -ItemType Directory -Force $out,"$out/runtime","$out/desktop","$out/gateway","$root/dist" | Out-Null
 Copy-Item -LiteralPath $node -Destination "$out/runtime/node.exe" -Force
-foreach($name in @('gui-bridge.mjs','updater.mjs','setup.mjs','app-relay.json','Mydex.ico','README.md','THIRD-PARTY-NODE.txt')){Copy-Item -LiteralPath "$root/desktop/$name" -Destination "$out/desktop/$name" -Force}
+foreach($name in @('gui-bridge.mjs','gateway-diagnostics.mjs','updater.mjs','setup.mjs','app-relay.json','Mydex.ico','README.md','THIRD-PARTY-NODE.txt')){Copy-Item -LiteralPath "$root/desktop/$name" -Destination "$out/desktop/$name" -Force}
+Copy-Item -LiteralPath "$root/desktop/connection-entry.mjs" -Destination "$out/desktop/connection-entry.mjs" -Force
+New-Item -ItemType Directory -Force "$out/desktop/headless" | Out-Null
+Copy-Item -LiteralPath "$root/desktop/headless/desktop-client.mjs" -Destination "$out/desktop/headless/desktop-client.mjs" -Force
+foreach($name in @('desktop-update.mjs','verify-package.mjs','lifecycle.mjs','local-state.mjs','manage.ps1')){Copy-Item -LiteralPath "$root/desktop/headless/$name" -Destination "$out/desktop/headless/$name" -Force}
 Copy-Item -LiteralPath "$root/desktop/bridges" -Destination "$out/desktop" -Recurse -Force
 New-Item -ItemType Directory -Force "$out/desktop/macos" | Out-Null
 Copy-Item -LiteralPath "$root/desktop/macos/updater.mjs" -Destination "$out/desktop/macos/updater.mjs" -Force
 Get-ChildItem "$root/gateway/*.mjs" | Copy-Item -Destination "$out/gateway" -Force
+New-Item -ItemType Directory -Force "$out/gateway/router" | Out-Null
+Get-ChildItem "$root/gateway/router/*.mjs" | Copy-Item -Destination "$out/gateway/router" -Force
 Copy-Item "$root/gateway/package*.json" "$out/gateway" -Force
 Copy-Item "$root/gateway/node_modules" "$out/gateway" -Recurse -Force
 Copy-Item "$root/LICENSE" "$out/LICENSE.txt" -Force

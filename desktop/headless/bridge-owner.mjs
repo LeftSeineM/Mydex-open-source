@@ -33,11 +33,20 @@ export class BridgeOwner {
     });
   }
   async close() {
-    if(this.closed)return;
+    if(this.closing)return this.closing;
+    this.closing=this.shutdown();
+    return this.closing;
+  }
+  async shutdown() {
+    // A broken pipe closes RPC, but does not prove the child has exited.
+    // Still reap that child on service shutdown, including concurrent callers.
+    if(!this.process.pid||this.process.exitCode!==null||this.process.signalCode!==null){this.lines.close();return;}
     // This is service shutdown only, never called when an Agent disconnects.
     const exited=new Promise(resolve=>this.process.once('exit',resolve));
-    this.process.stdin.end();
+    this.closed=true;
+    if(!this.process.stdin.destroyed)this.process.stdin.end();
+    else this.process.kill();
     const timer=setTimeout(()=>this.process.kill(),5000);
-    await exited;clearTimeout(timer);
+    try{await exited;}finally{clearTimeout(timer);this.lines.close();}
   }
 }

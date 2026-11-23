@@ -2,27 +2,42 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import {preflight} from './bridge-preflight.mjs';
 // Lifecycle installation/update is intentionally handled by a separate supervisor.
 // Never expose raw credential export or arbitrary shell execution to Agent clients.
-export const actions=new Set(['status','defaults','configureHub','start','stop','bridgeDiagnostics','findClaude','findToolBridge','configureTool','restoreClaude','restoreToolBridge','bridgeInstall']);
-export function createControlServer({owner,token,onShutdown,pairingDirectory,agentVersion}){
+export const actions=new Set(['status','defaults','configureHub','start','stop','prepareTool','bridgeDiagnostics','findClaude','findToolBridge','configureTool','restoreClaude','restoreToolBridge','bridgeInstall']);
+// Separate local credential: adding desktop UI operations must not broaden
+// the Agent/MCP endpoint (in particular, credential export and raw patching).
+const desktopActions=new Set(['status','defaults','start','stop','bridgeDiagnostics','findClaude','findToolBridge','configureTool','restoreClaude','restoreToolBridge','installClaude','installToolBridge','launchClaudeCompatibility','pairing','meshPairing','tunnelPairing','pairingQr','meshPairingQr','tunnelPairingQr','relayPairing']);
+export function createControlServer({owner,token,desktopToken,onShutdown,pairingDirectory,agentVersion,routerRequest}){
  if(typeof token!=='string'||token.length<32)throw Error('A strong local control token is required');
+ if(desktopToken!==undefined&&(typeof desktopToken!=='string'||desktopToken.length<32||desktopToken===token))throw Error('A separate strong desktop token is required');
  const expected=Buffer.from('Bearer '+token);
+ const desktopExpected=desktopToken&&Buffer.from('Bearer '+desktopToken);
  const server=http.createServer(async(req,res)=>{
    const reply=(status,value)=>{res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});res.end(JSON.stringify(value));};
    const provided=Buffer.from(req.headers.authorization||'');
+   const desktop=req.url==='/desktop';
+   const credential=desktop?desktopExpected:expected;
    // Browser pages must not be able to mutate the local service.
-   if(req.headers.origin||provided.length!==expected.length||!crypto.timingSafeEqual(provided,expected))return reply(403,{error:'Local authorization required'});
-   if(req.method!=='POST'||req.url!=='/rpc')return reply(404,{error:'Unknown endpoint'});
+   if(req.headers.origin||!credential||provided.length!==credential.length||!crypto.timingSafeEqual(provided,credential))return reply(403,{error:'Local authorization required'});
+   if(req.method!=='POST'||!['/rpc','/desktop'].includes(req.url))return reply(404,{error:'Unknown endpoint'});
    let size=0,parts=[];
    try{
      for await(const part of req){size+=part.length;if(size>65536){reply(413,{error:'Request too large'});return;}parts.push(part);}
      let m;try{m=JSON.parse(Buffer.concat(parts).toString());}catch{return reply(400,{error:'Invalid JSON'});}
-     if(!m||typeof m!=='object'||!(actions.has(m.action)||m.action==='shutdown'&&onShutdown||m.action==='pair'&&pairingDirectory))return reply(400,{error:'Unsupported management operation'});
+     if(desktop){
+       if(!m||typeof m!=='object'||!desktopActions.has(m.action))return reply(400,{error:'共享后台不支持该窗口操作；切换配置、更新与服务交接需使用专用管理入口。'});
+       if(m.args!==undefined&&(!m.args||typeof m.args!=='object'||Array.isArray(m.args)))return reply(400,{error:'Invalid arguments'});
+       const result=await owner.call(m.action,m.args||{});
+       if(m.action==='status')return reply(200,{result:{...result,owned:false,sharedOwner:true,agentVersion}});
+       return reply(200,{result});
+     }
+     if(!m||typeof m!=='object'||!(actions.has(m.action)||m.action==='shutdown'&&onShutdown||m.action==='pair'&&pairingDirectory||m.action==='router'&&routerRequest))return reply(400,{error:'Unsupported management operation'});
      if(m.args!==undefined&&(!m.args||typeof m.args!=='object'||Array.isArray(m.args)))return reply(400,{error:'Invalid arguments'});
      if(m.action==='shutdown'){reply(200,{result:{stopping:true}});setImmediate(onShutdown);return;}
+     if(m.action==='router')return reply(200,{result:await routerRequest(m.args?.operation,m.args?.args,m.args?.requestId)});
      if(m.action==='bridgeInstall'){
+       const {preflight}=await import('./bridge-preflight.mjs');
        const id=m.args?.tool;
        if(!['claude','deepseek','zcode','gemini'].includes(id))return reply(400,{error:'Unknown tool; diagnostic and reversible adapter development required'});
        const found=await owner.call(id==='claude'?'findClaude':'findToolBridge',{id});

@@ -11,7 +11,6 @@ export function parseMacProcesses(text){
   else if(/\/DeepSeek Harness\.app\/Contents\/MacOS\/DeepSeek Harness$/.test(executable))toolId='deepseek';
   else if(/\/Claude\.app\/Contents\/MacOS\/Claude$/.test(executable))toolId='claude-desktop';
   else if(/\/ZCode\.app\/Contents\/MacOS\/ZCode$/.test(executable))toolId='zcode';
-  else if(/\/(?:agy|Antigravity|antigravity)$/.test(executable))toolId='agy';
   else {const name=executable.split('/').at(-1);if(['claude','gemini','opencode','openclaw','kimi'].includes(name))toolId=name;}
   if(toolId)found.push({toolId,pid:Number(match[1]),executable,sessionId:null});
  }
@@ -26,13 +25,12 @@ export async function codingProcesses(){
  }
  if(process.platform!=='win32')return [];
  // Extract only tool identity and session ID in the child; never export command lines or secrets.
- const script=`$out=@(Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(codex|claude|zcode|gemini|opencode|node|Kimi Code|DeepSeek Harness|Antigravity|agy)\\.exe$' } | ForEach-Object {
+ const script=`$out=@(Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(codex|claude|zcode|gemini|opencode|node|Kimi Code|DeepSeek Harness)\\.exe$' } | ForEach-Object {
  $p=$_; $tool=$null; $exe=$p.ExecutablePath
  if($p.Name -eq 'codex.exe'){$tool='codex'}
  elseif($p.Name -eq 'Kimi Code.exe'){$tool='kimi'}
  elseif($p.Name -eq 'DeepSeek Harness.exe'){$tool='deepseek'}
  elseif($p.Name -eq 'ZCode.exe'){$tool='zcode'}
- elseif($p.Name -match '^(Antigravity|agy)\\.exe$'){$tool='agy'}
  elseif($p.Name -eq 'claude.exe'){$tool=if($exe -match 'claude-code|ClaudeCode'){ 'claude' }else{'claude-desktop'}}
  elseif($p.Name -match '^(gemini|opencode)\\.exe$'){$tool=$p.Name.Replace('.exe','')}
  elseif($p.CommandLine -match 'node_modules[\\\\/](?:@anthropic-ai[\\\\/])?claude-code'){$tool='claude';$exe=$null}

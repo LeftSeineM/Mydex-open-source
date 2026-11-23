@@ -1,6 +1,7 @@
 import '../widgets/interactions.dart';
 import '../widgets/spacing.dart';
 import 'package:flutter/material.dart';
+import 'router_workspace.dart';
 import 'package:flutter/services.dart';
 import '../controller.dart';
 import '../models.dart';
@@ -41,7 +42,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && c.settings.configured) {
-      c.reconnect();
+      c.resumeConnection();
     }
   }
 
@@ -170,10 +171,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                         ]
                       ]),
                       actions: [
+                        if (AppController.superagentTest)
+                          IconButton(
+                              tooltip: '原会话 Router · 灰度测试',
+                              icon: const Icon(Icons.account_tree_outlined,
+                                  size: 20),
+                              onPressed: () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                      builder: (_) =>
+                                          RouterWorkspacePage(controller: c)))),
                         IconButton(
                             tooltip: '新对话',
                             icon: const Icon(Icons.edit_square, size: 20),
-                            onPressed: c.toolId == 'codex' ? c.newTask : null),
+                            onPressed: c.toolCanCreate ? c.newTask : null),
                         IconButton(
                             tooltip: '连接设置',
                             icon:
@@ -201,7 +212,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                             _Banner(
                                 text: '连接已断开，正在重试。已发送任务仍由电脑执行。',
                                 icon: Icons.wifi_off,
-                                action: c.reconnect),
+                                action: c.resumeConnection),
                           if (c.cached)
                             _Banner(
                                 text: '当前显示本地缓存，连接后将同步最新状态。',
@@ -292,6 +303,27 @@ class _SidebarState extends State<_Sidebar> {
                                             fontSize: 18,
                                             fontWeight: FontWeight.w600))
                                   ])),
+                              if (AppController.superagentTest)
+                                Padding(
+                                    padding: const EdgeInsets.fromLTRB(
+                                        16, 0, 16, 12),
+                                    child: SegmentedButton<bool>(
+                                        segments: const [
+                                          ButtonSegment(
+                                              value: false, label: Text('原会话')),
+                                          ButtonSegment(
+                                              value: true,
+                                              label: Text('Router 项目'))
+                                        ],
+                                        selected: const {
+                                          false
+                                        },
+                                        onSelectionChanged: (_) =>
+                                            Navigator.of(context).push(
+                                                MaterialPageRoute(
+                                                    builder: (_) =>
+                                                        RouterWorkspacePage(
+                                                            controller: c))))),
                               Padding(
                                   padding: compactInsets(
                                       context,
@@ -423,12 +455,18 @@ class _SidebarState extends State<_Sidebar> {
                                       size: 19),
                                   title: const Text('设置',
                                       style: TextStyle(fontSize: 13)),
-                                  trailing: Text(
-                                      AppController.superagentTest
-                                          ? 'Superagent 测试'
-                                          : '0.2.22',
-                                      style: TextStyle(
-                                          fontSize: 10, color: Colors.grey)),
+                                  trailing: SizedBox(
+                                      width: AppController.superagentTest
+                                          ? 90
+                                          : null,
+                                      child: Text(
+                                          AppController.superagentTest
+                                              ? 'Superagent 测试'
+                                              : '0.2.22',
+                                          style: TextStyle(
+                                              fontSize: 10, color: Colors.grey),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis)),
                                   onTap: widget.onSettings),
                             ]))))));
   }
@@ -436,7 +474,13 @@ class _SidebarState extends State<_Sidebar> {
 
 class ConversationPanel extends StatefulWidget {
   final AppController controller;
-  const ConversationPanel({super.key, required this.controller});
+  final Widget? beforeComposer;
+  final String? agentLabel;
+  const ConversationPanel(
+      {super.key,
+      required this.controller,
+      this.beforeComposer,
+      this.agentLabel});
   @override
   State<ConversationPanel> createState() => _ConversationPanelState();
 }
@@ -658,7 +702,8 @@ class _ConversationPanelState extends State<ConversationPanel> {
                                   textAlign: TextAlign.center,
                                   style: const TextStyle(
                                       color: Colors.grey, fontSize: 13))),
-                        ..._messageTimeline(context, rows, c),
+                        ..._messageTimeline(context, rows, c,
+                            agentLabel: widget.agentLabel),
                         if (t?['error'] != null)
                           _Banner(text: t!['error'], icon: Icons.error_outline),
                         if (t?['status'] == 'Running')
@@ -697,6 +742,7 @@ class _ConversationPanelState extends State<ConversationPanel> {
                       },
                       child: const Icon(Icons.arrow_downward, size: 18)))),
       ])),
+      if (widget.beforeComposer != null) widget.beforeComposer!,
       PendingInteractions(controller: c),
       Align(
           alignment: Alignment.bottomCenter,
@@ -706,9 +752,22 @@ class _ConversationPanelState extends State<ConversationPanel> {
                   padding: compactInsets(
                       context, const EdgeInsets.fromLTRB(16, 8, 16, 12)),
                   child: Column(children: [
-                    if (id == null && c.toolId == 'codex')
+                    if (id == null && c.toolCanCreate)
                       NewTaskProjectPicker(controller: c),
                     PermissionBar(controller: c),
+                    if (c.toolId == 'deepseek' && c.dshRecoveryNotice != null)
+                      Text(c.dshRecoveryNotice!,
+                          style: const TextStyle(fontSize: 12)),
+                    if (c.toolId == 'deepseek' && id == null)
+                      TextButton(
+                          onPressed: c.sending ? null : c.recoverDshCreations,
+                          child: const Text('恢复上次新建会话')),
+                    if (t?['initialDelivery'] == 'unknown' ||
+                        t?['initialDelivery'] == 'not-confirmed')
+                      const Padding(
+                          padding: EdgeInsets.only(bottom: 6),
+                          child: Text('首次消息送达仍待核对，请查看原会话记录，不要重复发送。',
+                              style: TextStyle(fontSize: 12))),
                     if (t?['status'] == 'AwaitingApproval' &&
                         t?['canApprove'] == false)
                       const Text('当前请求需要在电脑处理', style: TextStyle(fontSize: 12)),
@@ -768,6 +827,7 @@ class _ConversationPanelState extends State<ConversationPanel> {
                                   maxLines: 6,
                                   enabled: !c.sending && c.toolCanSend,
                                   onChanged: (s) {
+                                    c.noteDshMessageDraft(id);
                                     c.drafts[key] = s;
                                     setState(() {
                                       prediction = null;
@@ -786,7 +846,11 @@ class _ConversationPanelState extends State<ConversationPanel> {
                                           ? const BoxConstraints(minHeight: 40)
                                           : null,
                                       hintText: prediction ??
-                                          (id == null ? '给电脑一个任务…' : '继续这个对话…'),
+                                          (widget.agentLabel == 'Router'
+                                              ? '和 Router 讨论下一步…'
+                                              : id == null
+                                                  ? '给电脑一个任务…'
+                                                  : '继续这个对话…'),
                                       hintMaxLines: 4,
                                       filled: false,
                                       border: InputBorder.none,
@@ -898,7 +962,8 @@ class _LatestTimeline extends StatelessWidget {
 }
 
 List<Widget> _messageTimeline(
-    BuildContext context, List<Json> rows, AppController c) {
+    BuildContext context, List<Json> rows, AppController c,
+    {String? agentLabel}) {
   final groups = <String, List<Json>>{};
   final keys = <String>[];
   int turn = 0;
@@ -933,7 +998,7 @@ List<Widget> _messageTimeline(
               children: steps
                   .map((s) => MessageBlock(
                       key: ValueKey(s['id']),
-                      message: {...s, 'agentName': c.toolName},
+                      message: {...s, 'agentName': agentLabel ?? c.toolName},
                       api: c.api))
                   .toList())));
     } else {
@@ -953,7 +1018,7 @@ List<Widget> _messageTimeline(
           },
           message: {
             ...m,
-            'agentName': c.toolName,
+            'agentName': agentLabel ?? c.toolName,
             'hideAgentLabel': m['role'] != 'user' && !labeledTurns.add(key)
           },
           api: c.api));
@@ -1015,4 +1080,4 @@ class _Banner extends StatelessWidget {
               onPressed: action,
               icon: const Icon(Icons.refresh, size: 17))
       ]));
-}
+}

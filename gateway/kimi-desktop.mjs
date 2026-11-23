@@ -37,12 +37,11 @@ export class KimiDesktop {
     const messages=rows.reverse().filter(m=>m.metadata?.origin?.kind!=='injection'&&['user','assistant','tool'].includes(m.role)).map(m=>({id:m.id,message:{role:m.role==='tool'?'toolResult':m.role,content:(m.content||[]).flatMap(b=>b.type==='text'?[b]:b.type==='tool_use'?[{type:'tool_use',name:b.tool_name,input:b.input}]:b.type==='tool_result'?[{text:typeof b.output==='string'?b.output:JSON.stringify(b.output)}]:[])}}));
     return {session:this.session(s),messages};
   }
-  async send(id,instruction) {
+  async send(id,instruction,requestId=crypto.randomUUID()) {
     const s=await this.request('sessions/'+encodeURIComponent(id));
     if(s.archived)throw new Error('原会话已归档');
     // Preserve the desktop's model and permission configuration. No retries on
     // ambiguous network failure: inspect the same conversation before resending.
-    const requestId=crypto.randomUUID();
     await this.request('sessions/'+encodeURIComponent(id)+'/prompts',{content:[{type:'text',text:instruction}],prompt_id:requestId});
     return {accepted:true,sessionId:id,requestId};
   }

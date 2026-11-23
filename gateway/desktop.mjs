@@ -43,16 +43,21 @@ export class Desktop {
     }
     throw new Error('Codex 桌面未运行或当前版本不支持连接');
   }
-  async call(tool, args) {
+  async call(tool, args, requestId) {
     if (!this.pipe) await this.discover();
     let r;
     try {
       r = await this.rpc(this.pipe, 'tools/call', {
         callerSource:'codex', namespace:'codex_app', threadId:this.callerThreadId,
-        callId:'mydex-'+crypto.randomUUID(), turnId:'mydex-'+crypto.randomUUID(), tool, arguments:args,
+        callId:'mydex-'+(requestId||crypto.randomUUID()), turnId:'mydex-'+(requestId||crypto.randomUUID()), tool, arguments:args,
       });
     } catch (e) { this.pipe = null; throw e; } // Never replay writes after an ambiguous timeout.
-    if (r.success === false || r.isError) throw new Error('Codex 桌面拒绝或未完成请求');
+    if (r.success === false || r.isError) {
+      const message = (r.contentItems || r.content || []).some(b =>
+        /^Tool response exceeds the size limit\./.test(b.text || ''));
+      throw Object.assign(new Error('Codex 桌面拒绝或未完成请求'),
+        message ? {code:'DESKTOP_RESPONSE_TOO_LARGE'} : {});
+    }
     const blocks = r.contentItems || r.content || [];
     for (const b of blocks) if (b.text) { try { return JSON.parse(b.text); } catch {} }
     return r;

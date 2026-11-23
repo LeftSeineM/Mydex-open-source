@@ -24,12 +24,15 @@ import {assertClaudeClosed} from './bridges/install-claude.mjs';
 import {electronInstalled,electronInstallationState,findElectron,installElectron,restoreElectron} from './bridges/install-electron.mjs';
 import {geminiInstalled,findGemini,installGemini,restoreGemini} from './bridges/install-gemini.mjs';
 import {createRequire} from 'node:module';
+import {gatewayFailure} from './gateway-diagnostics.mjs';
 const QRCode=createRequire(new URL('../gateway/package.json',import.meta.url))('qrcode');
 
 const appRoot=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const updater=process.platform==='darwin'?new MacUpdater(appRoot):new DesktopUpdater(appRoot);
-setTimeout(()=>void updater.check(),15000).unref();
-setInterval(()=>void updater.check(),6*3600000).unref();
+if(process.env.MYDEX_HEADLESS!=='1'){
+ setTimeout(()=>void updater.check(),15000).unref();
+ setInterval(()=>void updater.check(),6*3600000).unref();
+}
 const data=process.env.MYDEX_DATA_DIR||path.join(appRoot,'data');
 fs.mkdirSync(data,{recursive:true});
 const profileFile=path.join(data,'desktop-profile.json');
@@ -63,14 +66,14 @@ process.once('SIGTERM',()=>{stop();process.exit(0);});
 process.once('SIGINT',()=>{stop();process.exit(0);});
 function stop(){lanDiscovery?.stop();lanDiscovery=null;tunnelClient?.stop();tunnelClient=null;tunnelOnline=false;relayClient?.stop();relayClient=null;relayOnline=false;clearInterval(relayPoll);wanted=false;clearTimeout(retry);child?.kill();child=null;connected=false;}
 function start(){
- if(child)return;const c=config();if(!c)throw new Error('请先完成电脑连接配置');migrateCodexExecutable(c.file,c.value);wanted=true;lastError='';
+ if(child)return;const c=config();if(!c)throw new Error('请先完成电脑连接配置');migrateCodexExecutable(c.file,c.value);wanted=true;
  const entry=process.platform==='darwin'?path.join(appRoot,'desktop/macos/gateway.mjs'):path.join(appRoot,'gateway',c.kind+'.mjs');
  child=spawn(process.execPath,[entry,c.file],{windowsHide:true,stdio:['ignore','pipe','pipe','ipc']});
  const instance=child;
- child.stdout.resume();child.stderr.on('data',raw=>{if(raw.toString().includes('EADDRINUSE'))lastError='端口已被占用；若已运行旧连接程序，请先在原入口停止它';});
- child.on('message',m=>{if(m?.type==='connection')connected=m.connected===true;});
+ child.stdout.resume();child.stderr.on('data',raw=>{const message=gatewayFailure(raw.toString());if(message)lastError=message;});
+ child.on('message',m=>{if(m?.type==='connection'){connected=m.connected===true;if(connected)lastError='';}});
  child.on('error',()=>{lastError='连接程序启动失败，请检查程序文件与路径';});
- child.on('exit',()=>{if(child!==instance)return;child=null;connected=false;if(wanted)retry=setTimeout(start,10000);});
+ child.on('exit',()=>{if(child!==instance)return;child=null;connected=false;if(wanted){lastError||='连接服务启动后退出，正在重试';retry=setTimeout(start,10000);}});
 }
 async function hubState(c){
  return new Promise(resolve=>{const req=https.get('https://127.0.0.1:'+c.value.port+'/api/devices',{ca:fs.readFileSync(c.value.tls.cert),headers:{Authorization:'Bearer '+c.value.token}},res=>{let text='';res.on('data',b=>text+=b);res.on('end',()=>{try{resolve(res.statusCode===200?JSON.parse(text):null);}catch{resolve(null);}});});req.on('error',()=>resolve(null));req.setTimeout(1800,()=>{req.destroy();resolve(null);});});
@@ -85,6 +88,13 @@ async function meshAddress(c){
 }
 async function execute(m){
  const b=m.args||{};
+ if(m.action==='prepareTool'){
+  const c=config();if(!c||c.kind!=='server')throw Error('本机连接服务尚未配置');
+  const payload=JSON.stringify({tool:b.tool});
+  return new Promise((resolve,reject)=>{const req=https.request({hostname:'127.0.0.1',port:c.value.port,path:'/api/tools/prepare',method:'POST',ca:fs.readFileSync(c.value.tls.cert),checkServerIdentity:()=>undefined,headers:{Authorization:'Bearer '+c.value.token,'Content-Type':'application/json'}},res=>{
+   let text='';res.on('data',d=>{if(text.length<16384)text+=d;});res.on('end',()=>{try{const value=JSON.parse(text);if(res.statusCode!==200)return reject(Error('原应用尚未就绪，请查看连接能力'));resolve(value);}catch{reject(Error('无法核对应用状态'));}});
+  });req.on('error',()=>reject(Error('连接服务尚未就绪')));req.setTimeout(55000,()=>req.destroy());req.end(payload);});
+ }
  if(m.action==='authorizeCodexDesktop'&&process.platform==='darwin')return desktopAccess({action:'authorize'});
  if(m.action==='checkUpdate')return updater.check();
  if(m.action==='downloadUpdate')return updater.beginDownload();

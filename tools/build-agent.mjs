@@ -1,0 +1,24 @@
+import fs from 'node:fs';import path from 'node:path';import crypto from 'node:crypto';
+import {execFileSync} from 'node:child_process';
+import {verifyPackage} from '../desktop/headless/verify-package.mjs';
+const root=path.resolve(import.meta.dirname,'..');const [out,keyFile,version='0.1.0']=process.argv.slice(2);
+if(!out||!keyFile||fs.existsSync(out))throw Error('Choose a new output directory and supply the release signing key');
+execFileSync(process.execPath,['--test','gateway/test/tool-wake.test.mjs','gateway/test/process-lock.test.mjs','gateway/test/router-engine.test.mjs','desktop/headless/test/service-lifecycle.test.mjs','desktop/headless/test/gateway-diagnostics.test.mjs','gateway/test/tunnel.test.mjs'],{cwd:root,windowsHide:true,stdio:'pipe'});
+const base=path.join(root,'build/desktop-v0426');fs.mkdirSync(out,{recursive:true});
+for(const name of ['runtime','gateway','desktop'])fs.cpSync(path.join(base,name),path.join(out,name),{recursive:true});
+// Only application source and dependencies, never data/, private/ or vendor apps.
+for(const file of fs.readdirSync(path.join(root,'gateway')))if(file.endsWith('.mjs'))fs.copyFileSync(path.join(root,'gateway',file),path.join(out,'gateway',file));
+fs.cpSync(path.join(root,'gateway/router'),path.join(out,'gateway/router'),{recursive:true});
+for(const file of ['gui-bridge.mjs','gateway-diagnostics.mjs','connection-entry.mjs','setup.mjs','updater.mjs','app-relay.json','Mydex.ico'])fs.copyFileSync(path.join(root,'desktop',file),path.join(out,'desktop',file));
+fs.cpSync(path.join(root,'desktop/bridges'),path.join(out,'desktop/bridges'),{recursive:true});
+fs.cpSync(path.join(root,'desktop/headless'),path.join(out,'desktop/headless'),{recursive:true,filter:p=>path.basename(p)!=='test'});
+fs.copyFileSync(path.join(root,'LICENSE'),path.join(out,'LICENSE.txt'));
+execFileSync(path.join(process.env.WINDIR,'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),['/nologo','/target:winexe','/platform:x64','/r:System.Web.Extensions.dll','/out:'+path.join(out,'desktop/headless/Mydex-AgentHost.exe'),path.join(root,'desktop/headless/AgentHost.cs')],{windowsHide:true,stdio:'pipe'});
+const csc=path.join(process.env.WINDIR,'Microsoft.NET/Framework64/v4.0.30319/csc.exe');
+const refs=['/nologo','/target:winexe','/platform:x64','/r:System.Web.Extensions.dll','/r:System.Windows.Forms.dll','/r:System.Drawing.dll'];
+execFileSync(csc,[...refs,'/out:'+path.resolve(out,'Mydex.exe'),path.join(root,'desktop/Mydex.cs')],{windowsHide:true,stdio:'pipe'});
+execFileSync(csc,[...refs,'/out:'+path.resolve(out,'desktop/headless/Mydex-DesktopHost.exe'),path.join(root,'desktop/headless/DesktopHost.cs')],{windowsHide:true,stdio:'pipe'});
+const packageFile=path.join(out,'desktop/headless/package.json'),pkg=JSON.parse(fs.readFileSync(packageFile));pkg.version=version;fs.writeFileSync(packageFile,JSON.stringify(pkg,null,2));
+const files=[];function scan(dir){for(const entry of fs.readdirSync(dir,{withFileTypes:true})){const p=path.join(dir,entry.name);if(entry.isSymbolicLink())throw Error('Symlink in package');if(entry.isDirectory())scan(p);else{const data=fs.readFileSync(p);files.push({path:path.relative(out,p).replaceAll('\\','/'),size:data.length,sha256:crypto.createHash('sha256').update(data).digest('hex')});}}}scan(out);
+const raw=Buffer.from(JSON.stringify({product:'mydex-agent-windows',version,files}));fs.writeFileSync(path.join(out,'agent-package.json'),JSON.stringify({payload:raw.toString('base64'),signature:crypto.sign(null,raw,fs.readFileSync(keyFile)).toString('base64')}));
+verifyPackage(out);console.log(JSON.stringify({version,files:files.length,output:out}));

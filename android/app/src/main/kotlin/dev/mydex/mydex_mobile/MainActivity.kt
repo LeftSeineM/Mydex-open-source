@@ -41,7 +41,7 @@ class MainActivity: FlutterActivity() {
                         } catch (e: Exception) { scanResult = null; result.error("CAMERA", "无法打开相机", null) }
                     }
                 } else if (call.method == "openWebsite") {
-                    startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://app.leftseinem.dpdns.org/")))
+                    startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://app.leftseinem.com/")))
                     result.success(true)
                 } else if (call.method == "appVersion") {
                     val info = packageManager.getPackageInfo(packageName, 0)

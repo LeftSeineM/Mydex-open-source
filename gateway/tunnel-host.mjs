@@ -17,7 +17,7 @@ export function startTunnelHost({origin,identity,port,onState=()=>{},allowInsecu
   function url(kind,id){const u=new URL(`/v1/${kind}/${room}`,base);u.protocol=base.protocol==='https:'?'wss:':'ws:';if(id)u.searchParams.set('id',id);return u;}
   function connect(){
     if(stopped)return;
-    ws=new WebSocket(url('host'),{headers:{Authorization:'Bearer '+identity.hostSecret},handshakeTimeout:10000,maxPayload:8192});
+    ws=new WebSocket(url('host'),{family:process.env.MYDEX_TUNNEL_IPV4==='1'?4:undefined,headers:{Authorization:'Bearer '+identity.hostSecret},handshakeTimeout:10000,maxPayload:8192});
     ws.on('error',()=>{});ws.on('ping',()=>lastPing=Date.now());
     ws.on('open',()=>{lastPing=Date.now();ws.send(JSON.stringify({type:'hello',clientHash:hash(identity.clientSecret)}));});
     ws.on('message',raw=>{
@@ -27,9 +27,17 @@ export function startTunnelHost({origin,identity,port,onState=()=>{},allowInsecu
       // Fixed loopback destination only. The relay has no control of host/port.
       const tcp=net.connect({host:'127.0.0.1',port});active.add(tcp);
       let data,stream;const cleanup=()=>{active.delete(tcp);tcp.destroy();data?.terminate();};
-      tcp.setTimeout(90000,cleanup);tcp.on('error',cleanup);tcp.on('close',cleanup);
+      tcp.setTimeout(90000,cleanup);tcp.on('error',cleanup);
+      tcp.on('close',()=>{
+        active.delete(tcp);
+        // A completed HTTP response can close loopback while encrypted bytes
+        // are still queued on the slower WebSocket. Let the pipe flush its
+        // writable queue before the normal close handshake.
+        if(tcp.readableEnded&&!tcp.errored&&stream){stream.end();}
+        else data?.terminate();
+      });
       tcp.once('connect',()=>{
-        data=new WebSocket(url('stream',m.id),{headers:{Authorization:'Bearer '+identity.hostSecret},handshakeTimeout:10000,maxPayload:256*1024,perMessageDeflate:false});
+        data=new WebSocket(url('stream',m.id),{family:process.env.MYDEX_TUNNEL_IPV4==='1'?4:undefined,headers:{Authorization:'Bearer '+identity.hostSecret},handshakeTimeout:10000,maxPayload:256*1024,perMessageDeflate:false});
         data.on('error',cleanup);data.on('close',cleanup);
         stream=createWebSocketStream(data);stream.on('error',cleanup);tcp.pipe(stream).pipe(tcp);
       });

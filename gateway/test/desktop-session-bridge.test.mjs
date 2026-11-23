@@ -29,7 +29,7 @@ test('desktop bridge sends to the exact existing session and deduplicates uncert
 });
 
 test('desktop-only creation never falls back to an independent CLI task',async()=>{
- const a=Object.create(Adapter.prototype);let created=false;a.cli={create:()=>{created=true;}};
+ const a=Object.create(Adapter.prototype);a.remoteDesktop={rows:new Map(),refs:new Map()};let created=false;a.cli={create:()=>{created=true;}};
  for(const toolId of ['claude','claude-desktop','zcode','gemini','opencode'])await assert.rejects(a.create({toolId,instruction:'continue'}),/桌面/);
  assert.equal(created,false);
 });
@@ -39,7 +39,7 @@ test('native session routing preserves Unicode identifiers, project directory an
  registry.bridge={detail:async(tool,id)=>{assert.equal(tool,'claude-desktop');assert.equal(id,'会话/a:b');return {session:{sessionId:id,cwd:'D:/project',title:'Original'},messages:[{uuid:'u',message:{role:'user',content:'继续这条对话'}}]};}};
  const detail=await registry.nativeDetail('native:claude-desktop:'+encodeURIComponent('会话/a:b'));
  assert.equal(detail.cwd,'D:/project');assert.equal(detail.messages[0].text,'继续这条对话');assert.equal(detail.readOnly,false);
- const a=Object.create(Adapter.prototype);a.toolbox=registry;
+ const a=Object.create(Adapter.prototype);a.remoteDesktop={rows:new Map(),refs:new Map()};a.toolbox=registry;a.config={};
  assert.deepEqual(await a.detail(detail.id),detail);
 });
 

@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-const fields=['id','toolId','title','projectId','status','updatedAt','source','cwd','readOnly','canApprove','canInterrupt','syncMode','turnId','error'];
+const fields=['id','toolId','title','projectId','status','updatedAt','source','cwd','readOnly','canApprove','canInterrupt','syncMode','turnId','error','initialDelivery','creationRequestId'];
 export function summary(t){return Object.fromEntries(fields.filter(k=>t[k]!==undefined).map(k=>[k,typeof t[k]==='string'?t[k].slice(0,k==='title'?500:2000):t[k]]));}
 // Cursors are task-bound and authenticated. History remains on the original computer.
 export class TaskTransport {

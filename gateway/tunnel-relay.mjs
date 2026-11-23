@@ -5,12 +5,20 @@ import crypto from 'node:crypto';
 import {WebSocketServer,createWebSocketStream} from 'ws';
 const digest=s=>crypto.createHash('sha256').update(s).digest('hex');
 const secret=s=>typeof s==='string'&&/^[A-Za-z0-9_-]{43}$/.test(s);
-export function createTunnelRelay({maxHosts=1000,maxStreams=16}={}) {
+export function createTunnelRelay({maxHosts=1000,maxStreams=16,heartbeatMs=20000,idleTimeoutMs=60000}={}) {
   const hosts=new Map(),streams=new Map(),rates=new Map();
   const server=http.createServer((req,res)=>{const ok=['/health','/v1/health'].includes(req.url);res.writeHead(ok?200:404,{'Content-Type':'application/json'});res.end(JSON.stringify({ok}));});
   const wss=new WebSocketServer({noServer:true,maxPayload:256*1024,perMessageDeflate:false});
   const reject=(socket,status=403)=>socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
   function closeStream(id){const s=streams.get(id);if(!s)return;streams.delete(id);clearTimeout(s.timer);s.phone.terminate();s.host?.terminate();hosts.get(s.room)?.streams.delete(id);}
+  function peerClosed(id,code){
+    const s=streams.get(id);if(!s)return;
+    if(![1000,1005].includes(code)||!s.host||s.phone.readyState===3&&s.host.readyState===3){closeStream(id);return;}
+    // The source may finish while its readable stream still holds bytes waiting
+    // for the slower destination. pipe() propagates EOF after draining those
+    // bytes; terminating the destination here truncates large downloads.
+    clearTimeout(s.timer);s.timer=setTimeout(()=>closeStream(id),30000);s.timer.unref();
+  }
   function dropHost(room,entry){if(hosts.get(room)!==entry)return;hosts.delete(room);for(const id of entry.streams)closeStream(id);entry.socket.terminate();}
   server.on('upgrade',(req,socket,head)=>{
     const ip=req.socket.remoteAddress,now=Date.now();let rate=rates.get(ip);
@@ -31,7 +39,7 @@ export function createTunnelRelay({maxHosts=1000,maxStreams=16}={}) {
       if(!entry||digest(token)!==room||!s||s.room!==room||s.host)return reject(socket);
     }
     wss.handleUpgrade(req,socket,head,ws=>{
-      ws.alive=true;ws.on('pong',()=>ws.alive=true);ws.on('error',()=>{});
+      ws.alive=true;ws.lastActiveAt=Date.now();ws.lastRead=0;ws.lastWritten=0;ws.on('pong',()=>ws.alive=true);ws.on('error',()=>{});
       if(kind==='host'){
         if(entry)dropHost(room,entry);
         const e={socket:ws,streams:new Set(),clientHash:null};hosts.set(room,e);
@@ -43,13 +51,13 @@ export function createTunnelRelay({maxHosts=1000,maxStreams=16}={}) {
         const id=crypto.randomBytes(32).toString('base64url');
         const s={room,phone:ws,host:null,timer:setTimeout(()=>closeStream(id),12000)};
         streams.set(id,s);entry.streams.add(id);
-        ws.on('close',()=>closeStream(id));
+        ws.on('close',code=>peerClosed(id,code));
         ws.on('message',()=>closeStream(id)); // no bytes before host is ready
         entry.socket.send(JSON.stringify({type:'open',id}));return;
       }
       const id=u.searchParams.get('id'),s=streams.get(id);if(!s){ws.terminate();return;}
       s.host=ws;clearTimeout(s.timer);s.phone.send(JSON.stringify({type:'ready'}));
-      ws.on('close',()=>closeStream(id));
+      ws.on('close',code=>peerClosed(id,code));
       s.phone.removeAllListeners('message');
       for(const peer of [s.phone,ws])peer.on('message',(_,binary)=>{if(!binary)closeStream(id);});
       // Streaming backpressure matters for APK downloads and slow mobile links.
@@ -59,8 +67,17 @@ export function createTunnelRelay({maxHosts=1000,maxStreams=16}={}) {
     });
   });
   const timer=setInterval(()=>{
-    for(const ws of wss.clients){if(!ws.alive)ws.terminate();else{ws.alive=false;ws.ping();}}
+    for(const ws of wss.clients){
+      const read=ws._socket?.bytesRead||0,written=ws._socket?.bytesWritten||0;
+      // A backpressured readable WebSocket can defer pong parsing while its
+      // outgoing download is still advancing. Byte progress is also liveness.
+      // Our empty unmasked ping itself writes two bytes; it is not progress.
+      const progress=read>ws.lastRead||written-ws.lastWritten>2;
+      if(ws.alive||progress)ws.lastActiveAt=Date.now();
+      if(Date.now()-ws.lastActiveAt>=idleTimeoutMs)ws.terminate();
+      else{ws.lastRead=read;ws.lastWritten=written;ws.alive=false;ws.ping();}
+    }
     for(const [ip,r] of rates)if(r.until<Date.now())rates.delete(ip);
-  },20000);timer.unref();
+  },heartbeatMs);timer.unref();
   return {server,close(){clearInterval(timer);for(const ws of wss.clients)ws.terminate();wss.close();server.close();}};
 }

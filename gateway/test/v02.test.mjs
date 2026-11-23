@@ -11,7 +11,7 @@ import {cliArguments} from '../cli-adapter.mjs';
 import {createHub} from '../../desktop/setup.mjs';
 
 test('slow global desktop list never blocks local history or marks local desktop offline',async()=>{
- const a=Object.create(Adapter.prototype);a.desktop={discover:async()=>{},call:()=>new Promise(()=>{})};
+ const a=Object.create(Adapter.prototype);a.remoteDesktop={rows:new Map(),refs:new Map()};a.desktop={discover:async()=>{},call:()=>new Promise(()=>{})};
  a.config={};a.indexed=[{id:'desktop:local',updatedAt:1}];a.managed=new Map();a.nativeTasks=new Map();a.cli={tasks:new Map()};a.toolbox={list:async()=>[]};
  const result=await a.list();assert.equal(result.desktopOnline,true);assert.equal(result.tasks[0].id,'desktop:local');
 });

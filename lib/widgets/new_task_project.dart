@@ -22,7 +22,9 @@ class NewTaskProjectPicker extends StatelessWidget {
           isDense: true,
         ),
         items: [
-          const DropdownMenuItem(value: '', child: Text('不指定项目')),
+          DropdownMenuItem(
+              value: '',
+              child: Text(c.toolId == 'deepseek' ? '请选择 DSH 工作目录' : '不指定项目')),
           ...c.visibleProjects.map((p) => DropdownMenuItem<String>(
                 value: p['id'],
                 child: Text(p['name'] ?? '项目',

@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/central_updates.dart';
+import '../services/private_updates.dart';
 import 'package:path_provider/path_provider.dart';
 import '../services/api.dart';
 
@@ -13,8 +14,10 @@ class UpdateTile extends StatefulWidget {
 }
 
 class _UpdateTileState extends State<UpdateTile> {
+  static const privateChannel = bool.fromEnvironment('MYDEX_SUPERAGENT_TEST');
   bool busy = false;
-  String status = '从 Mydex 统一更新站检查，不需要连接电脑';
+  String status =
+      privateChannel ? '仅从当前已配对电脑检查鉴权私测更新' : '从 Mydex 统一更新站检查，不需要连接电脑';
   Future<void> check() async {
     // Android update manifests contain APKs and cannot update an iOS app.
     if (!Platform.isAndroid) return;
@@ -26,7 +29,12 @@ class _UpdateTileState extends State<UpdateTile> {
     try {
       final current = await const MethodChannel('dev.mydex/device')
           .invokeMapMethod<String, dynamic>('appVersion');
-      final m = await updates.check();
+      if (privateChannel && widget.api == null) throw StateError('请先连接私测电脑');
+      final privateUpdates =
+          privateChannel ? PrivateUpdates(widget.api!) : null;
+      final m = privateUpdates != null
+          ? await privateUpdates.check()
+          : await updates.check();
       if (!mounted) return;
       if ((m['versionCode'] as int) <= (current?['code'] as int? ?? 4)) {
         setState(() => status = '当前版本 ${current?['name'] ?? '0.2.13'} 已是最新');
@@ -50,12 +58,18 @@ class _UpdateTileState extends State<UpdateTile> {
       if (yes != true) return;
       final dir = Directory('${(await getTemporaryDirectory()).path}/updates');
       final file = File('${dir.path}/update.apk');
-      await updates.download(m, file, (received, size) {
+      void progress(int received, int size) {
         if (mounted) {
-          setState(
-              () => status = '统一更新站下载中 ${(received * 100 / size).floor()}%');
+          setState(() => status =
+              '${privateChannel ? '鉴权私测' : '统一更新站'}下载中 ${(received * 100 / size).floor()}%');
         }
-      });
+      }
+
+      if (privateUpdates != null) {
+        await privateUpdates.download(m, file, progress);
+      } else {
+        await updates.download(m, file, progress);
+      }
       final opened = await const MethodChannel('dev.mydex/device')
           .invokeMethod<bool>('installUpdate');
       if (mounted) {
@@ -63,7 +77,11 @@ class _UpdateTileState extends State<UpdateTile> {
             opened == true ? '请在系统界面确认更新' : '允许 Mydex 安装应用后，点击此处重新检查更新');
       }
     } catch (e) {
-      if (mounted) setState(() => status = '更新未完成，请检查手机网络后重试；无需连接电脑');
+      if (mounted) {
+        setState(() => status = privateChannel
+            ? '私测更新未完成，请连接提供私测包的电脑后重试'
+            : '更新未完成，请检查手机网络后重试；无需连接电脑');
+      }
     } finally {
       updates.close();
       if (mounted) setState(() => busy = false);

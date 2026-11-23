@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math';
 import 'api_exception.dart';
 import 'lan_discovery.dart';
+import 'p2p_native.dart';
 
 /// Only transports the gateway's TLS bytes. Certificate pinning and Bearer
 /// authentication stay end-to-end inside GatewayApi, including live WebSocket.
@@ -12,6 +13,8 @@ class TunnelProxy {
   final String access;
   final String fingerprint;
   final List<String> directUrls;
+  P2pTransport? p2p;
+  String? lastRoute;
   HttpServer? _server;
   final HttpClient _relayClient = HttpClient()
     ..connectionTimeout = const Duration(seconds: 12);
@@ -38,7 +41,13 @@ class TunnelProxy {
     password =
         base64UrlEncode(List.generate(32, (_) => Random.secure().nextInt(256)))
             .replaceAll('=', '');
-    final direct = await discoverComputer(fingerprint, candidates: directUrls);
+    ({String host, int port})? direct;
+    // Mobile data has no LAN peer: discovery must not delay the relay path.
+    // Every discovered endpoint is pinned by discovery AND the inner TLS client.
+    unawaited(
+        discoverComputer(fingerprint, candidates: directUrls).then((value) {
+      if (!_closed) direct = value;
+    }).catchError((_) {}));
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     if (_closed) {
       await server.close(force: true);
@@ -56,10 +65,12 @@ class TunnelProxy {
       }
       WebSocket? ws;
       Socket? socket;
-      if (direct != null) {
+      final endpointDirect = direct;
+      if (endpointDirect != null) {
         Socket? upstream;
         try {
-          upstream = await Socket.connect(direct.host, direct.port,
+          upstream = await Socket.connect(
+              endpointDirect.host, endpointDirect.port,
               timeout: const Duration(seconds: 2));
           if (_closed) {
             upstream.destroy();
@@ -68,6 +79,7 @@ class TunnelProxy {
           socket = await req.response.detachSocket(writeHeaders: false);
           _sockets.addAll([socket, upstream]);
           socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+          lastRoute = '局域网直连';
           final a = socket, b = upstream;
           void end() {
             _sockets.remove(a);
@@ -83,6 +95,19 @@ class TunnelProxy {
           upstream?.destroy();
         }
       }
+      final directStream = await p2p?.open();
+      if (directStream != null) {
+        try {
+          if (_closed) throw StateError('Tunnel closed');
+          final channelSocket = await req.response.detachSocket(writeHeaders: false);
+          _sockets.add(channelSocket);
+          channelSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+          lastRoute = 'P2P 直连';
+          directStream.attach(channelSocket, () => _sockets.remove(channelSocket));
+          return;
+        } catch (_) { directStream.close(); }
+      }
+      unawaited(p2p?.warm());
       final ready = Completer<void>();
       void cleanup() {
         if (!ready.isCompleted) {
@@ -127,6 +152,7 @@ class TunnelProxy {
         socket = await req.response.detachSocket(writeHeaders: false);
         _sockets.add(socket);
         socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        lastRoute = '加密中继';
         socket.listen((data) => ws?.add(data),
             onError: (_) => cleanup(), onDone: cleanup);
       } catch (_) {
@@ -146,6 +172,7 @@ class TunnelProxy {
 
   void close() {
     _closed = true;
+    p2p?.close();
     _relayClient.close();
     unawaited(_server?.close(force: true));
     for (final ws in _streams.toList()) {

@@ -8,6 +8,11 @@ import {DeepSeekDesktop} from './deepseek-desktop.mjs';
 // A bridge descriptor is issued by an already-running desktop application.
 // This client never launches an agent or resumes a transcript in a new process.
 export class DesktopSessionBridge {
+  identity(toolId){
+    if(toolId==='kimi'){const c=this.kimi.connection();return crypto.createHash('sha256').update(c.base+'|'+c.token).digest('hex');}
+    if(toolId==='deepseek'){const c=JSON.parse(fs.readFileSync(path.join(this.directory,'deepseek.json'),'utf8'));return crypto.createHash('sha256').update(c.base+'|'+c.cookie).digest('hex');}
+    return this.descriptor(toolId).instance;
+  }
   constructor({homeDir=os.homedir(),bridgeDirectory,...config}={}) {
     this.kimi=new KimiDesktop({...config,homeDir});
     this.deepseek=new DeepSeekDesktop({...config,homeDir,bridgeDirectory});
@@ -34,5 +39,5 @@ export class DesktopSessionBridge {
     return (await this.request(toolId,'sessions',undefined,d)).sessions;
   }
   detail(toolId,sessionId){if(toolId==='kimi')return this.kimi.detail(sessionId);if(toolId==='deepseek')return this.deepseek.detail(sessionId);return this.request(toolId,'detail',{sessionId});}
-  async send(toolId,sessionId,instruction){if(toolId==='kimi')return this.kimi.send(sessionId,instruction);if(toolId==='deepseek')return this.deepseek.send(sessionId,instruction);if(toolId==='zcode')await this.detail(toolId,sessionId);return this.request(toolId,'send',{sessionId,instruction,requestId:crypto.randomUUID()});}
+  async send(toolId,sessionId,instruction,requestId=crypto.randomUUID()){if(toolId==='kimi')return this.kimi.send(sessionId,instruction,requestId);if(toolId==='deepseek')return this.deepseek.send(sessionId,instruction,requestId);if(toolId==='zcode')await this.detail(toolId,sessionId);return this.request(toolId,'send',{sessionId,instruction,requestId});}
 }

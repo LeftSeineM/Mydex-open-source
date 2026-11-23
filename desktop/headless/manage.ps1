@@ -60,13 +60,6 @@ if(Test-Path -LiteralPath $marker){$previous=Read-Current;$verify=Join-Path $Roo
 Verify-WithNode $node $verify $Package
 $envelope=Get-Content -LiteralPath (Join-Path $Package 'agent-package.json') -Raw|ConvertFrom-Json
 $manifest=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($envelope.payload))|ConvertFrom-Json
-
-$profileFile=Join-Path $Root 'data/desktop-profile.json'
-if(($manifest.features.router -eq $false) -and (Test-Path -LiteralPath $profileFile)){
- $profile=Get-Content -LiteralPath $profileFile -Raw|ConvertFrom-Json
- $privateConfig=Join-Path $profile.root 'gateway/private/config.json'
- if((Test-Path -LiteralPath $privateConfig) -and ((Get-Content -LiteralPath $privateConfig -Raw|ConvertFrom-Json).router.enabled -eq $true)){throw 'Keep private Router installation on its private update channel'}
-}
 $slot=$manifest.version+'-'+[Guid]::NewGuid().ToString('N').Substring(0,8)
 $dest=Join-Path $Root ('releases/'+$slot)
 New-Item -ItemType Directory -Path $dest -Force|Out-Null
@@ -113,4 +106,6 @@ $principal=New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive
 $settings=New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName $task -Action $a -Trigger $trigger -Principal $principal -Settings $settings -Force|Out-Null
 try{Start-Agent}catch{Stop-Agent;if($previous){[IO.File]::WriteAllText((Join-Path $Root 'current.json'),($previous|ConvertTo-Json));Start-Agent};throw}
+$desktopHost=Join-Path $dest 'desktop/headless/Mydex-DesktopHost.exe'
+if((Test-Path -LiteralPath $desktopHost) -and !(Test-Path -LiteralPath (Join-Path $Root 'Mydex.exe'))){Copy-Item -LiteralPath $desktopHost -Destination (Join-Path $Root 'Mydex.exe')}
 Done @{ok=$true;installed=$true;version=$manifest.version;root=$Root;configurationPreserved=$true}

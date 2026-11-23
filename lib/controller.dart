@@ -6,6 +6,9 @@ import 'package:flutter/services.dart';
 import 'models.dart';
 import 'services/api.dart';
 import 'services/storage.dart';
+import 'services/dsh_create_outbox.dart';
+import 'services/router_command_journal.dart';
+import 'package:crypto/crypto.dart';
 
 class AppController extends ChangeNotifier {
   static bool superagentTest =
@@ -37,7 +40,21 @@ class AppController extends ChangeNotifier {
   }
 
   final LocalStorage storage;
-  AppController(this.storage);
+  final DshCreateOutbox _dshOutbox;
+  final RouterCommandJournal routerJournal;
+  bool _dshNewDraftRequested = false, _dshRecovering = false;
+  String? dshRecoveryNotice;
+  AppController(this.storage,
+      {DshCreateOutbox? dshCreateOutbox,
+      RouterCommandJournal? routerCommandJournal})
+      : routerJournal = routerCommandJournal ??
+            RouterCommandJournal(
+                read: storage.readRouterJournal,
+                save: storage.saveRouterJournal,
+                lock: storage.withRouterLock),
+        _dshOutbox = dshCreateOutbox ??
+            DshCreateOutbox(
+                read: storage.readDshOutbox, save: storage.saveDshOutbox);
   ConnectionSettings settings = const ConnectionSettings();
   List<Json> connections = [];
   String get connectionName =>
@@ -76,6 +93,10 @@ class AppController extends ChangeNotifier {
   String? controlNotice;
   List<Json> get deviceTools =>
       tools.where((t) => t['deviceId'] == deviceId).toList();
+  bool get toolCanCreate =>
+      toolId == 'codex' ||
+      deviceTools.any(
+          (t) => t['id'] == toolId && t['capabilities']?['create'] == true);
   bool get toolCanSend =>
       selected?['readOnly'] != true &&
       (toolId == 'codex' ||
@@ -128,8 +149,22 @@ class AppController extends ChangeNotifier {
         await storage.saveProfiles(connections);
       }
       final cache = await storage.readCache();
-      if (cache != null && cache['baseUrl'] == settings.baseUrl) {
+      if (cache != null &&
+          cache['baseUrl'] == settings.baseUrl &&
+          cache['identity'] ==
+              RouterCommandJournal.digest(
+                  {'url': settings.baseUrl, 'token': settings.token})) {
         tasks = objects(cache['tasks']);
+        projects = objects(cache['projects']);
+        tools = objects(cache['tools']);
+        // Cached metadata is display-only; never advertise a cached PC as online.
+        devices = objects(cache['devices'])
+            .map((d) => <String, dynamic>{
+                  ...d,
+                  'online': false,
+                  'desktopOnline': false
+                })
+            .toList();
         for (final detail in objects(cache['details'])) {
           details[detail['id']] = detail;
         }
@@ -178,6 +213,8 @@ class AppController extends ChangeNotifier {
     await storage.saveSettings(value);
     settings = value;
     if (changed) {
+      dshRecoveryNotice = null;
+      _dshNewDraftRequested = false;
       tasks = [];
       devices = [];
       projects = [];
@@ -254,6 +291,9 @@ class AppController extends ChangeNotifier {
 
   Future<void> reconnect() async {
     final generation = ++_generation;
+    _refreshing = null;
+    _catalogRefresh = null;
+    _catalogAt = null;
     _retry?.cancel();
     _socket?.close();
     api?.close();
@@ -263,8 +303,11 @@ class AppController extends ChangeNotifier {
     await _connect(generation);
   }
 
+  int? _connectingGeneration;
   Future<void> _connect(int generation) async {
     if (generation != _generation || !settings.configured) return;
+    if (_connectingGeneration == generation) return;
+    _connectingGeneration = generation;
     try {
       final socket = await api!.connect();
       if (generation != _generation) {
@@ -286,13 +329,19 @@ class AppController extends ChangeNotifier {
       if (selectedId != null) {
         socket.add(jsonEncode({'type': 'subscribe', 'taskId': selectedId}));
       }
-      await refresh();
-      if (selectedId != null) await select(selectedId!);
+      // Metadata, receipt recovery and the visible conversation are independent.
+      // Handshake completion is not held hostage by a full tool scan.
+      // Give the visible conversation priority over catalog traffic.
+      if (selectedId != null) unawaited(select(selectedId!));
+      unawaited(refresh());
+      unawaited(recoverDshCreations().catchError((_) {}));
     } catch (_) {
       if (generation == _generation) {
         error = '连接断开，正在自动重连';
         _lost(generation);
       }
+    } finally {
+      if (_connectingGeneration == generation) _connectingGeneration = null;
     }
   }
 
@@ -343,6 +392,11 @@ class AppController extends ChangeNotifier {
 
   void _mergeDetail(Json task) {
     final previous = details[task['id']];
+    for (final field in ['initialDelivery', 'creationRequestId']) {
+      if (!task.containsKey(field) && previous?[field] != null) {
+        task[field] = previous![field];
+      }
+    }
     if (previous != null &&
         previous['windowed'] == true &&
         task['windowed'] == true &&
@@ -377,6 +431,11 @@ class AppController extends ChangeNotifier {
     _cacheTimer = Timer(const Duration(seconds: 2), () {
       final snapshot = {
         'baseUrl': settings.baseUrl,
+        'identity': RouterCommandJournal.digest(
+            {'url': settings.baseUrl, 'token': settings.token}),
+        'projects': projects,
+        'tools': tools,
+        'devices': devices,
         'details': details.values
             .toList()
             .reversed
@@ -404,28 +463,92 @@ class AppController extends ChangeNotifier {
     });
   }
 
-  Future<void> refresh() async {
+  Future<void>? _refreshing;
+  Future<void> resumeConnection() async {
+    if (_connectingGeneration == _generation) return;
+    if (!connected) return reconnect();
+    // A live socket survives backgrounding. Do not discard TLS/tunnel state.
+    await refresh();
+  }
+
+  Future<void> refresh() {
     final generation = _generation;
+    return _refreshing ??= _refreshMetadata().whenComplete(() {
+      if (generation == _generation) _refreshing = null;
+    });
+  }
+
+  Future<void>? _catalogRefresh;
+  DateTime? _catalogAt;
+  Future<void> _refreshMetadata() async {
+    final generation = _generation;
+    final client = api;
+    if (client == null) return;
+    bool current() => generation == _generation && identical(client, api);
+    // Tool and project scans may take seconds. They must not own the refresh
+    // spinner, and repeated refreshes must not pile up identical scans.
+    unawaited(refreshCatalog());
     try {
-      final r = await api!.get('/api/tasks');
-      if (generation != _generation) return;
+      final r = await client.get('/api/tasks');
+      if (!current()) return;
       tasks = objects(r['tasks']);
       devices = objects(r['devices']);
       deviceId ??= devices.isNotEmpty ? devices.first['id'] : null;
       cached = false;
-      _scheduleCache();
-      final p = await api!.get('/api/projects');
-      if (generation != _generation) return;
-      projects = objects(p['projects']);
-      try {
-        final r = await api!.get('/api/tools');
-        if (generation == _generation) tools = objects(r['tools']);
-      } catch (_) {}
       error = null;
+      _scheduleCache();
+      notifyListeners();
     } catch (e) {
-      if (generation == _generation) error = e.toString();
+      if (current()) {
+        error = e.toString();
+        notifyListeners();
+      }
     }
-    notifyListeners();
+  }
+
+  Future<void> refreshCatalog({bool force = false}) {
+    if (_catalogRefresh != null) return _catalogRefresh!;
+    if (!force &&
+        _catalogAt != null &&
+        DateTime.now().difference(_catalogAt!) < const Duration(seconds: 30)) {
+      return Future.value();
+    }
+    final generation = _generation, client = api;
+    if (client == null) return Future.value();
+    bool current() => generation == _generation && identical(client, api);
+    var okay = true;
+    _catalogRefresh = Future.wait([
+      () async {
+        try {
+          final r = await client.get('/api/projects');
+          if (current()) {
+            projects = objects(r['projects']);
+            notifyListeners();
+          }
+        } catch (_) {
+          okay = false;
+        }
+      }(),
+      () async {
+        try {
+          final r = await client.get('/api/tools');
+          if (current()) {
+            tools = objects(r['tools']);
+            notifyListeners();
+          }
+        } catch (_) {
+          okay = false;
+        }
+      }(),
+    ]).then((_) {
+      if (current()) {
+        if (okay) _catalogAt = DateTime.now();
+        _scheduleCache();
+      }
+    }).whenComplete(() {
+      if (current()) _catalogRefresh = null;
+    });
+    return _catalogRefresh!;
   }
 
   void chooseDevice(String id) {
@@ -565,6 +688,7 @@ class AppController extends ChangeNotifier {
   }
 
   void newTask() {
+    _dshNewDraftRequested = toolId == 'deepseek';
     final inheritedProject = selected?['projectId']?.toString();
     if (inheritedProject != null &&
         visibleProjects.any((p) => p['id'] == inheritedProject)) {
@@ -602,6 +726,50 @@ class AppController extends ChangeNotifier {
         loading = false;
         notifyListeners();
       }
+    }
+  }
+
+  /// Resolve the designated native Router before changing tool selection. A
+  /// previously selected DSH/Claude tool must not leak its controls into Codex.
+  Future<bool> openNativeRouter(String device, String session) async {
+    final activeApi = api,
+        generation = _generation,
+        revision = _workspaceRevision;
+    if (activeApi == null || device.isEmpty || session.isEmpty) return false;
+    final id = '$device~$session';
+    try {
+      final detail =
+          await activeApi.get('/api/tasks/${Uri.encodeComponent(id)}');
+      if (!identical(api, activeApi) ||
+          generation != _generation ||
+          revision != _workspaceRevision) {
+        return false;
+      }
+      if (detail['id'] != id ||
+          (detail['deviceId'] != null && detail['deviceId'] != device)) {
+        throw StateError('Router 原会话身份不匹配');
+      }
+      final tool =
+          detail['toolId'] ?? (detail['source'] == 'desktop' ? 'codex' : null);
+      if (tool is! String || tool.isEmpty) {
+        throw StateError('无法确认 Router 所属原应用');
+      }
+      chooseDevice(device);
+      chooseTool(tool);
+      composing = true;
+      selectedId = id;
+      _mergeDetail(detail);
+      _socket?.add(jsonEncode({'type': 'subscribe', 'taskId': id}));
+      notifyListeners();
+      return true;
+    } catch (e) {
+      if (identical(api, activeApi) &&
+          generation == _generation &&
+          revision == _workspaceRevision) {
+        error = e.toString();
+        notifyListeners();
+      }
+      return false;
     }
   }
 
@@ -660,6 +828,11 @@ class AppController extends ChangeNotifier {
   }
 
   Future<bool> send(String text) async {
+    if (selectedId == null && toolId == 'deepseek' && projectId == null) {
+      error = '请先选择 DSH 新对话的工作目录';
+      notifyListeners();
+      return false;
+    }
     if (sending ||
         !connected ||
         !deviceOnline ||
@@ -674,13 +847,16 @@ class AppController extends ChangeNotifier {
     final revision = _workspaceRevision;
     try {
       if (id == null) {
-        final t = await api!.post('/api/tasks', {
+        final body = <String, dynamic>{
           'deviceId': deviceId,
           'projectId': projectId,
           'toolId': toolId,
           ...newOptions,
           'instruction': text.trim()
-        });
+        };
+        final t = toolId == 'deepseek'
+            ? await _submitDshCreation(body)
+            : await api!.post('/api/tasks', body);
         if (revision != _workspaceRevision) {
           await refresh();
           return true;
@@ -690,8 +866,12 @@ class AppController extends ChangeNotifier {
         drafts.remove('new:$deviceId:$toolId:$projectId');
         await select(selectedId!);
       } else {
-        await api!.post('/api/tasks/${Uri.encodeComponent(id)}/messages',
-            {'instruction': text.trim()});
+        if (id.contains('~native:deepseek:')) {
+          await _submitDshMessage(id, text.trim());
+        } else {
+          await api!.post('/api/tasks/${Uri.encodeComponent(id)}/messages',
+              {'instruction': text.trim()});
+        }
         drafts.remove(id);
         if (selectedId == id) await select(id);
       }
@@ -702,6 +882,158 @@ class AppController extends ChangeNotifier {
     } finally {
       sending = false;
       notifyListeners();
+    }
+  }
+
+  final Set<String> _dshEditedMessageDrafts = {};
+  void noteDshMessageDraft(String? id) {
+    if (id != null && id.contains('~native:deepseek:')) {
+      _dshEditedMessageDrafts.add(id);
+    }
+  }
+
+  Future<void> _submitDshMessage(String id, String text) async {
+    final activeApi = api!;
+    final body = <String, dynamic>{
+      'operation': 'message',
+      'sessionId': id,
+      'deviceId': id.split('~').first,
+      'toolId': 'deepseek',
+      'instruction': text
+    };
+    final scope = _dshScope(body, settings);
+    final records = await _dshOutbox.reservations(), old = records[scope];
+    final edited = _dshEditedMessageDrafts.remove(id);
+    if (old is Map &&
+        old['task'] is Map &&
+        (edited || (old['body'] as Map?)?['instruction'] != text)) {
+      await _dshOutbox.newDraft(scope);
+    }
+    await _dshOutbox.submit(
+        scope: scope,
+        body: body,
+        post: (payload, key) async {
+          await activeApi.post('/api/tasks/${Uri.encodeComponent(id)}/messages',
+              {'instruction': payload['instruction']},
+              requestId: key);
+          return {'id': id, 'delivery': 'acknowledged'};
+        },
+        lookup: (key) =>
+            activeApi.get('/api/requests/${Uri.encodeComponent(key)}'));
+  }
+
+  String _dshScope(Json body, ConnectionSettings connection) => sha256
+      .convert(utf8.encode(jsonEncode([
+        connection.fingerprint.isNotEmpty
+            ? connection.fingerprint.toLowerCase()
+            : connection.baseUrl.replaceFirst(RegExp(r'/+$'), ''),
+        connection.token,
+        body['deviceId'],
+        'deepseek',
+        body['projectId'],
+        if (body['operation'] == 'message') body['sessionId']
+      ])))
+      .toString();
+
+  Future<Json> _submitDshCreation(Json body) async {
+    final activeApi = api!, scope = _dshScope(body, settings);
+    Future<Json> lookup(String id) =>
+        activeApi.get('/api/requests/${Uri.encodeComponent(id)}');
+    if (_dshNewDraftRequested) {
+      _dshNewDraftRequested = false;
+      final records = await _dshOutbox.reservations(), old = records[scope];
+      if (old is Map && old['task'] == null) {
+        final recovered =
+            await _dshOutbox.recover(scope: scope, lookup: lookup);
+        if (recovered == null) throw StateError('上次新建仍待核对，不会重复创建；请点击恢复新建会话');
+        dshRecoveryNotice = '已恢复上次新建的原会话，没有另建会话';
+        return recovered;
+      }
+      await _dshOutbox.newDraft(scope);
+    }
+    return _dshOutbox.submit(
+        scope: scope,
+        body: body,
+        post: (payload, key) =>
+            activeApi.post('/api/tasks', payload, requestId: key),
+        lookup: lookup);
+  }
+
+  /// Reconnect only queries existing operation IDs; it never submits a prompt.
+  Future<void> recoverDshCreations() async {
+    if (_dshRecovering || api == null || !connected) return;
+    _dshRecovering = true;
+    final generation = _generation,
+        revision = _workspaceRevision,
+        activeApi = api!,
+        connection = settings;
+    Json? lastTask, lastBody, pendingBody;
+    try {
+      final records = await _dshOutbox.reservations();
+      for (final entry in records.entries) {
+        if (generation != _generation || !identical(activeApi, api)) return;
+        if (entry.value is! Map) continue;
+        final record = Map<String, dynamic>.from(entry.value as Map);
+        if (record['body'] is! Map || record['task'] is Map) continue;
+        final body = Map<String, dynamic>.from(record['body']);
+        if (body['toolId'] != 'deepseek' ||
+            entry.key != _dshScope(body, connection)) {
+          continue;
+        }
+        final task = await _dshOutbox.recover(
+            scope: entry.key,
+            lookup: (id) =>
+                activeApi.get('/api/requests/${Uri.encodeComponent(id)}'));
+        if (generation != _generation || !identical(activeApi, api)) return;
+        if (task == null) {
+          pendingBody = body;
+          continue;
+        }
+        if (body['operation'] == 'message') {
+          if (drafts[body['sessionId']] == body['instruction']) {
+            drafts.remove(body['sessionId']);
+          }
+          dshRecoveryNotice = '已核对 DSH 续聊消息已提交，没有重新发送';
+          continue;
+        }
+        details[task['id']] = task;
+        if (!tasks.any((t) => t['id'] == task['id'])) tasks.insert(0, task);
+        lastTask = task;
+        lastBody = body;
+      }
+      if (lastTask != null) {
+        dshRecoveryNotice = '已恢复 DSH 原会话，没有重复新建';
+        if (revision == _workspaceRevision &&
+            selectedId == null &&
+            !composing) {
+          deviceId = lastBody!['deviceId'];
+          toolId = 'deepseek';
+          projectId = lastBody['projectId'];
+          _dshNewDraftRequested = false;
+          await select(lastTask['id']);
+        }
+      } else if (pendingBody != null) {
+        dshRecoveryNotice = 'DSH 请求结果仍待核对，不会重复发送或新建';
+        if (pendingBody['operation'] != 'message' &&
+            revision == _workspaceRevision &&
+            selectedId == null &&
+            !composing) {
+          deviceId = pendingBody['deviceId'];
+          toolId = 'deepseek';
+          projectId = pendingBody['projectId'];
+          composing = true;
+          drafts['new:$deviceId:$toolId:$projectId'] =
+              pendingBody['instruction'];
+          _dshNewDraftRequested = false;
+        }
+      }
+    } catch (_) {
+      if (generation == _generation) {
+        dshRecoveryNotice = '新建恢复记录暂不可读取，请保留数据后重试；不会自动重新创建';
+      }
+    } finally {
+      _dshRecovering = false;
+      if (generation == _generation) notifyListeners();
     }
   }
 

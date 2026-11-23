@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mydex P2P 私测</title>
+<style>
+  body{max-width:40rem;margin:3rem auto;padding:0 1rem;font:16px/1.6 system-ui;color:#17243b;background:#f5f7fc}
+  section{background:white;padding:1.2rem;border-radius:1rem;border:1px solid #dbe3ee}
+  textarea,input{box-sizing:border-box;width:100%;padding:.65rem;font:inherit;border:1px solid #b4c3d6;border-radius:.5rem}
+  button{padding:.6rem .85rem;margin:.65rem .2rem;color:white;background:#294f8a;border:0;border-radius:.5rem;font:inherit;cursor:pointer}
+  output{display:block;white-space:pre-wrap;margin-top:1rem}
+</style>
+<h1>Mydex P2P 私测</h1>
+<section id="desktop" hidden>
+  <p>将 <code>test.html</code> 发到手机并在浏览器打开。邀请和应答含临时网络地址，只在自己的两台设备间私下交换。</p>
+  <label>STUN 地址（跨网测试填自己可用的地址，同网留空）<input id="stun" placeholder="stun:主机名:端口"></label>
+  <button id="offer">生成邀请</button>
+  <label>发给手机的邀请<textarea id="invitation" readonly rows="4"></textarea></label>
+  <label>粘贴来自手机的应答<textarea id="reply" rows="4"></textarea></label>
+  <button id="accept">接收应答</button><button id="status">检查桌面状态</button><button id="exit">结束测试</button>
+</section>
+<section id="phone" hidden>
+  <label>粘贴电脑生成的邀请<textarea id="incoming" rows="4"></textarea></label>
+  <button id="answer">生成应答</button>
+  <label>发回电脑的应答<textarea id="outgoing" readonly rows="4"></textarea></label>
+  <button id="ping" disabled>测试直连延迟</button>
+</section>
+<output id="result" aria-live="polite"></output>
+<script>
+const $ = id => document.getElementById(id);
+const present = message => $('result').textContent = message;
+const desktop = location.hostname === '127.0.0.1' && location.protocol === 'http:';
+$(desktop ? 'desktop' : 'phone').hidden = false;
+let peer, channel, pending;
+async function post(operation, data = {}) {
+  const response = await fetch(operation, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+  const value = await response.json();
+  if (!response.ok) throw Error(value.error || '桌面探测服务拒绝了请求');
+  return value;
+}
+function action(id, run) {
+  $(id).onclick = async () => {
+    $(id).disabled = true;
+    try { await run(); } catch (error) { present(error.message); }
+    finally { $(id).disabled = false; }
+  };
+}
+action('offer', async () => {
+  $('invitation').value = ''; $('reply').value = '';
+  present('正在收集网络地址…');
+  $('invitation').value = JSON.stringify(await post('offer', { stun: $('stun').value.trim() }));
+  present('邀请已生成，5 分钟内完成本轮测试。');
+});
+action('accept', async () => { await post('answer', JSON.parse($('reply').value)); present('应答已接收，等待直连。'); });
+action('status', async () => {
+  const status = await post('status');
+  present(`连接状态 ${status.state}，已接收 ${status.replies} 次探测。${status.candidateTypes.length ? ' 地址类型 ' + status.candidateTypes.join(' / ') : ''}`);
+});
+action('exit', async () => { await post('exit'); present('测试已结束，可以关闭页面。'); });
+action('answer', async () => {
+  $('outgoing').value = ''; $('ping').disabled = true;
+  const invitation = JSON.parse($('incoming').value);
+  if (invitation.type !== 'offer' || typeof invitation.sdp !== 'string' || (invitation.stun && !/^stun:[a-z0-9.-]+:\d{1,5}$/i.test(invitation.stun))) throw Error('邀请格式不正确');
+  if (!window.RTCPeerConnection) throw Error('请用支持 WebRTC 的浏览器打开此 HTML 文件');
+  peer?.close();
+  peer = new RTCPeerConnection({ iceServers: invitation.stun ? [{ urls: invitation.stun }] : [] });
+  peer.onconnectionstatechange = () => { if (peer.connectionState === 'failed') present('直连失败。跨网可能被 NAT 或防火墙限制。'); };
+  peer.ondatachannel = event => {
+    channel = event.channel;
+    channel.onopen = () => { $('ping').disabled = false; present('P2P 数据通道已建立。'); };
+    channel.onclose = () => { $('ping').disabled = true; };
+    channel.onmessage = event => {
+      if (event.data !== 'pong:' + pending?.id) return;
+      const ms = performance.now() - pending.at;
+      clearTimeout(pending.timer); pending = undefined;
+      present(`P2P 往返 ${ms.toFixed(1)} ms`);
+    };
+  };
+  await peer.setRemoteDescription({ type: 'offer', sdp: invitation.sdp });
+  await peer.setLocalDescription(await peer.createAnswer());
+  for (let i = 0; i < 64 && peer.iceGatheringState !== 'complete'; i++) await new Promise(resolve => setTimeout(resolve, 125));
+  $('outgoing').value = JSON.stringify(peer.localDescription);
+  present('将应答发回电脑并点击「接收应答」。');
+});
+$('ping').onclick = () => {
+  if (channel?.readyState !== 'open') return;
+  present('正在等待电脑回包…');
+  clearTimeout(pending?.timer);
+  const id = Array.from(crypto.getRandomValues(new Uint8Array(18)), n => n.toString(16).padStart(2, '0')).join('');
+  pending = { id, at: performance.now(), timer: setTimeout(() => { pending = undefined; present('探测超时，未收到电脑回包。'); }, 5000) };
+  channel.send('ping:' + id);
+};
+</script>
+</html>

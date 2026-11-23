@@ -11,7 +11,16 @@ if (signingFile.exists()) signingFile.withReader('UTF-8') { signingValues.load(i
 
 android {
     namespace = "dev.mydex.mydex_mobile"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 36
+
+    // Keep the normal versionCode when producing the ARM64-only private APK.
+    if (System.getenv('MYDEX_PRIVATE_ARM64_APK') == '1') {
+        packagingOptions {
+            jniLibs {
+                excludes += ['**/armeabi-v7a/**', '**/x86/**', '**/x86_64/**']
+            }
+        }
+    }
 
     compileOptions {
         coreLibraryDesugaringEnabled true

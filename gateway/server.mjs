@@ -9,6 +9,11 @@ import {WebAccess} from './web-access.mjs';
 import {PairingInvitations} from './pairing.mjs';
 import {Predictions} from './predictions.mjs';
 import {TaskTransport,summary} from './transport.mjs';
+import {NativeRouter} from './router/engine.mjs';
+import {GatewayRouterAdapter} from './router/gateway-adapter.mjs';
+import {coordinatorToken} from './router/access.mjs';
+import {ResourceQueries} from './router/resources.mjs';
+import {createP2pTransport} from './p2p-transport.mjs';
 
 export function authorized(header, token) {
   if(typeof token!=='string'||token.length<24)return false;
@@ -16,6 +21,7 @@ export function authorized(header, token) {
   return a.length===b.length&&crypto.timingSafeEqual(a,b);
 }
 export function createGateway(config,localAdapter) {
+  const p2p = config.router?.enabled === true && config.tls ? createP2pTransport(config.port) : null;
   const invitations = new PairingInvitations();
   const webAccess = new WebAccess(config.webOrigins || []);
   const predictions = new Predictions(config.predictionFile);
@@ -29,6 +35,10 @@ export function createGateway(config,localAdapter) {
   adapters.set(config.local.id,{call:(m,a)=>local.dispatch(m,a)});update(config.local.id,true);
   local.on('change',e=>broadcast({type:'task',task:publicTask(transport.page(e.task,config.local.id+'~'+e.task.id),config.local.id)}));
   async function call(id,method,args){const a=adapters.get(id);if(!a)throw Object.assign(new Error('这台电脑当前离线'),{status:503});return a.call(method,args);}
+  // Explicit private opt-in, owned by this gateway process. EXE and Agent MCP
+  // connect to this same owner; never start a second coordinating gateway.
+  const router=config.router?.enabled===true?new NativeRouter({file:config.router.file,router:config.router.identity,resources:new ResourceQueries(config.router.resources),adapter:new GatewayRouterAdapter({call,devices})}):null;
+  const routerTimer=router?setInterval(()=>{void router.tick();if(config.router.autoWake===true)void router.wake().catch(()=>{});},5000):null;routerTimer?.unref();
   async function refresh(){
     await Promise.all([...adapters.keys()].map(async id=>{
       try{const r=await call(id,'list',{});cache.set(id,r.tasks.map(t=>publicTask(summary(t),id)));update(id,true,r.desktopOnline);}
@@ -44,7 +54,7 @@ export function createGateway(config,localAdapter) {
   const json=(res,status,body)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});res.end(JSON.stringify(body));};
   async function body(req){let b='';for await(const chunk of req){b+=chunk;if(Buffer.byteLength(b)>131072)throw Object.assign(new Error('指令过长'),{status:413});}try{return JSON.parse(b||'{}');}catch{throw Object.assign(new Error('JSON 格式无效'),{status:400});}}
   // Idempotency records survive restart, so an ambiguous mobile retry cannot repeat a task.
-  const ledgerFile=config.ledgerFile;let ledger={};if(ledgerFile&&fs.existsSync(ledgerFile))ledger=JSON.parse(fs.readFileSync(ledgerFile,'utf8'));
+  const ledgerFile=config.ledgerFile||(config.local.dataDir?path.join(config.local.dataDir,'requests.json'):undefined);let ledger={};if(ledgerFile&&fs.existsSync(ledgerFile))ledger=JSON.parse(fs.readFileSync(ledgerFile,'utf8'));
   const saveLedger=()=>{if(ledgerFile){fs.writeFileSync(ledgerFile+'.tmp',JSON.stringify(ledger));fs.renameSync(ledgerFile+'.tmp',ledgerFile);}};
   async function handle(req,res){
     if(!webAccess.cors(req,res))return json(res,403,{error:'此网页来源尚未获电脑授权'});
@@ -59,23 +69,61 @@ export function createGateway(config,localAdapter) {
         return json(res,200,{token:config.token,name:config.devices.find(d=>d.id===config.local.id)?.name||'我的电脑'});
       }catch(e){return json(res,e.status||400,{error:e.message});}
     }
-    if(!authorized(req.headers.authorization,config.token))return json(res,401,{error:'鉴权失败，请核对访问令牌'});
+    const ownerAuthorized=authorized(req.headers.authorization,config.token);
+    const coordinatorAuthorized=config.router?.enabled===true&&authorized(req.headers.authorization,coordinatorToken(config.token));
+    if(!ownerAuthorized&&!(coordinatorAuthorized&&req.url.split('?')[0]==='/api/router'))return json(res,401,{error:'鉴权失败，请核对访问令牌'});
+    const routerAuthority=ownerAuthorized?'human':'coordinator';
     if(req.method==='POST'&&req.url==='/api/web/ticket'){
       const ticket=webAccess.issue(req.headers.origin);
       return ticket?json(res,200,{ticket}):json(res,403,{error:'网页来源未授权或连接请求过多'});
     }
     const u=new URL(req.url,'http://localhost');let key;
     try{
+      if(req.method==='POST'&&u.pathname==='/api/private/p2p/answer'){
+        if(!p2p||!ownerAuthorized||!req.socket.encrypted||req.headers.origin)return json(res,404,{error:'P2P 私测不可用'});
+        const b=await body(req);
+        return json(res,200,await p2p.answer(b.sdp));
+      }
+      if(req.method==='POST'&&u.pathname==='/api/tools/prepare'){
+        const b=await body(req);return json(res,200,await call(config.local.id,'prepareTool',{toolId:b.tool}));
+      }
+      const recovery=u.pathname.match(/^\/api\/requests\/([A-Za-z0-9-]{16,100})$/);
+      if(req.method==='GET'&&recovery){
+        const requestId=recovery[1],entry=ledger[requestId];
+        if(entry?.kind==='message'&&entry.toolId==='deepseek'){
+          const observed=entry.status===200?{acknowledged:true}:await call(entry.deviceId,'messageStatus',{id:entry.id,requestId});
+          return json(res,200,{requestId,state:observed.acknowledged?'complete':'unknown',task:observed.acknowledged?{id:entry.deviceId+'~'+entry.id,delivery:'acknowledged'}:null});
+        }
+        if(!entry||entry.kind!=='create'||entry.toolId!=='deepseek')return json(res,200,{requestId,state:'not-found',task:null});
+        const current=await call(entry.deviceId,'creationStatus',{requestId});
+        if(!current.task)return json(res,200,{requestId,state:current.state,initialDelivery:current.initialDelivery,task:null});
+        return json(res,200,{requestId,state:current.state,task:publicTask({...summary(current.task),projectId:entry.projectId,title:entry.title},entry.deviceId)});
+      }
+      if(u.pathname==='/api/router'){
+        if(!router)return json(res,404,{error:'此电脑尚未启用 Router 灰度测试'});
+        if(req.method==='GET'){
+          const operation=u.searchParams.get('operation')||'snapshot';
+          if(!['snapshot','catalog','events'].includes(operation))return json(res,400,{error:'只读操作无效'});
+          return json(res,200,await router.request(operation,{jobId:u.searchParams.get('jobId')||undefined,after:Number(u.searchParams.get('after')||0)}));
+        }
+        if(req.method==='POST'){
+          const b=await body(req);const requestId=req.headers['idempotency-key'];
+          if(typeof requestId!=='string'||!/^[a-zA-Z0-9-]{16,100}$/.test(requestId))return json(res,400,{error:'缺少有效的 Idempotency-Key'});
+          return json(res,200,await router.request(b.operation,b.args||{},requestId,{authority:routerAuthority}));
+        }
+        return json(res,405,{error:'方法不支持'});
+      }
       if(req.method==='POST'&&u.pathname==='/api/pairing/create'){
         if(!req.socket.encrypted||!['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress))return json(res,403,{error:'请在本机生成二维码'});
         return json(res,200,invitations.create());
       }
-      if(req.method==='GET'&&['/api/update','/api/update/apk'].includes(u.pathname)){
-        const dir=path.resolve(config.updateDir||path.join(path.dirname(config.ledgerFile||'private/requests.json'),'updates'));
+      if(req.method==='GET'&&['/api/update','/api/update/apk','/api/update/stream','/api/update/stream/apk'].includes(u.pathname)){
+        const legacyDir=path.resolve(config.updateDir||path.join(path.dirname(config.ledgerFile||'private/requests.json'),'updates'));
+        const dir=u.pathname.startsWith('/api/update/stream') ? path.join(legacyDir,'stream-v1') : legacyDir;
         const manifest=path.join(dir,'manifest.json'),apk=path.join(dir,'update.apk');
         if(!fs.existsSync(manifest)||!fs.existsSync(apk))return json(res,404,{error:'主机尚未发布更新'});
         const m=JSON.parse(fs.readFileSync(manifest,'utf8'));
-        if(u.pathname==='/api/update')return json(res,200,m);
+        if(!u.pathname.endsWith('/apk'))return json(res,200,m);
         res.writeHead(200,{'Content-Type':'application/vnd.android.package-archive','Content-Length':fs.statSync(apk).size,'Cache-Control':'no-store'});
         const stream=fs.createReadStream(apk);stream.on('error',()=>res.destroy());res.on('close',()=>stream.destroy());stream.pipe(res);return;
       }
@@ -104,17 +152,23 @@ export function createGateway(config,localAdapter) {
       if(req.method==='GET'&&imageMatch){const r=await call(imageMatch[1],'image',{key:imageMatch[2]});res.writeHead(200,{'Content-Type':r.mime,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});return res.end(Buffer.from(r.data,'base64'));}
       const match=u.pathname.match(/^\/api\/tasks\/([^/]+)(?:\/(messages|approve|interrupt|controls|settings|queue|goal|side-chats))?$/);
       if(req.method==='GET'&&match?.[2]==='controls'){const[d,id]=parseId(decodeURIComponent(match[1]));return json(res,200,await call(d,'controls',{id}));}
-      if(req.method==='GET'&&match&&!match[2]){const [d,id]=parseId(decodeURIComponent(match[1]));return json(res,200,publicTask(await transport.detail(d+'~'+id,u.searchParams.get('cursor')),d));}
+      if(req.method==='GET'&&match&&!match[2]){const [d,id]=parseId(decodeURIComponent(match[1]));
+        // Opening a selected original conversation from an authenticated phone
+        // prepares its app. Router research/periodic observation uses separate
+        // routerInspect/transport paths and never wakes all observed Workers.
+        if(!u.searchParams.has('cursor')&&u.searchParams.get('wake')!=='0'&&(id.startsWith('desktop:')||/^native:(deepseek|kimi|claude-desktop|zcode):/.test(id)))await call(d,'prepareSession',{id});
+        return json(res,200,publicTask(await transport.detail(d+'~'+id,u.searchParams.get('cursor')),d));}
       if(req.method!=='POST')return json(res,404,{error:'接口不存在'});
       const b=await body(req);
       key=req.headers['idempotency-key'];if(typeof key!=='string'||!/^[a-zA-Z0-9-]{16,100}$/.test(key))return json(res,400,{error:'缺少有效的 Idempotency-Key'});
       const digest=crypto.createHash('sha256').update(req.url+JSON.stringify(b)).digest('hex');
       if(ledger[key]){const old=ledger[key];if(old.digest!==digest)return json(res,409,{error:'请求标识已用于另一操作'});return json(res,old.status||409,old.body||{error:'该请求已发送，结果尚未确认；请先查看会话，不要重复发送'});}
       if((u.pathname==='/api/tasks'||match?.[2]==='messages')&&(typeof b.instruction!=='string'||!b.instruction.trim()||b.instruction.length>50000))return json(res,400,{error:'请填写有效指令'});
-      ledger[key]={digest,at:Date.now()};saveLedger();
+      const messageRef=match?.[2]==='messages'?parseId(decodeURIComponent(match[1])):null;
+      ledger[key]={digest,at:Date.now(),...(messageRef&&messageRef[1].startsWith('native:deepseek:')?{kind:'message',deviceId:messageRef[0],id:messageRef[1],toolId:'deepseek'}:{}),...(u.pathname==='/api/tasks'?{kind:'create',deviceId:b.deviceId,toolId:b.toolId,projectId:b.projectId,title:b.instruction.slice(0,70)}:{})};saveLedger();
       let result;
-      if(u.pathname==='/api/tasks'){if(!devices.has(b.deviceId))throw Object.assign(new Error('请选择电脑'),{status:400});result=publicTask(summary(await call(b.deviceId,'create',b)),b.deviceId);}
-      else if(match&&['messages','approve','interrupt','settings','queue','goal','side-chats'].includes(match[2])){const [d,id]=parseId(decodeURIComponent(match[1]));result=await call(d,({messages:'send',approve:'approve',interrupt:'interrupt',settings:'settings',queue:'queue',goal:'goal','side-chats':'sideChat'})[match[2]],{...b,id});if(match[2]==='side-chats')result={...result,id:d+'~desktop:'+result.id,parentId:d+'~desktop:'+result.parentId};}
+      if(u.pathname==='/api/tasks'){if(!devices.has(b.deviceId))throw Object.assign(new Error('请选择电脑'),{status:400});result=publicTask(summary(await call(b.deviceId,'create',{...b,requestId:key})),b.deviceId);}
+      else if(match&&['messages','approve','interrupt','settings','queue','goal','side-chats'].includes(match[2])){const [d,id]=parseId(decodeURIComponent(match[1]));result=await call(d,({messages:'send',approve:'approve',interrupt:'interrupt',settings:'settings',queue:'queue',goal:'goal','side-chats':'sideChat'})[match[2]],{...b,id,requestId:key});if(match[2]==='side-chats')result={...result,id:d+'~desktop:'+result.id,parentId:d+'~desktop:'+result.parentId};}
       else throw Object.assign(new Error('接口不存在'),{status:404});
       if(result?.messages)result=summary(result);
       ledger[key].status=200;ledger[key].body=result;saveLedger();json(res,200,result);void refresh();
@@ -151,8 +205,8 @@ export function createGateway(config,localAdapter) {
     }
   });
   const heartbeat=setInterval(()=>{for(const ws of wss.clients){if(!ws.alive){ws.terminate();continue;}ws.alive=false;ws.ping();}},15000);heartbeat.unref();
-  server.on('close',()=>{clearInterval(timer);clearInterval(heartbeat);for(const ws of wss.clients)ws.terminate();});
-  return {server,refresh,devices,adapters};
+  server.on('close',()=>{clearInterval(timer);clearInterval(heartbeat);clearInterval(routerTimer);for(const ws of wss.clients)ws.terminate();router?.close();p2p?.close();});
+  return {server,refresh,devices,adapters,router};
 }
 if(process.argv[1]&&import.meta.url===new URL('file:///'+process.argv[1].replaceAll('\\','/')).href){
   const config=JSON.parse(fs.readFileSync(process.argv[2]||'private/config.json','utf8'));

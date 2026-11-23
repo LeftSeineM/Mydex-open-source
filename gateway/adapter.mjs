@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {EventEmitter} from 'node:events';
 import {Desktop} from './desktop.mjs';
+import {readRemoteDesktop, RemoteDesktopCatalog, remotePrefix} from './router/remote-desktop.mjs';
 import {Codex} from './codex.mjs';
 import {NativeFollower} from './native.mjs';
 import {Controls} from './controls.mjs';
@@ -12,7 +13,9 @@ import {MacDesktopNavigation} from './mac-desktop-navigation.mjs';
 import {WindowsDesktopNavigation} from './windows-desktop-navigation.mjs';
 import {LiveSideChats} from './live-side-chats.mjs';
 import {UsageQueries} from './usage.mjs';
+import {DshCreationJournal,nativeCreationId} from './dsh-creation-journal.mjs';
 import {permissionState,interaction,validateAnswers,messageQuestions,answeredMessageQuestions} from './permissions.mjs';
+import {ToolWake} from './tool-wake.mjs';
 
 export function taskStatus(value) {
   const s = typeof value === 'object' ? value?.type : value;
@@ -31,10 +34,16 @@ export class Adapter extends EventEmitter {
   constructor(config) {
     super(); this.config = config;
     this.desktop = new Desktop(config.callerThreadId);
+    this.remoteDesktop = new RemoteDesktopCatalog(config.remoteDesktopSessions);
     this.controls = new Controls(this);
     this.usageQueries = new UsageQueries(this);
     this.liveSideChats = new LiveSideChats();
     this.toolbox = new ToolRegistry(config);
+    this.toolWake=new ToolWake({directory:path.join(config.dataDir,'application-wake'),probe:async tool=>{
+      if(tool==='codex'){try{await this.desktop.discover();return true;}catch{try{await this.native.connect();return true;}catch{return false;}}}
+      await this.toolbox.bridge.sessions(tool);return true;
+    }});
+    this.dshCreations=new DshCreationJournal({directory:path.join(config.dataDir,'dsh-creations'),client:this.toolbox.bridge.deepseek});
     this.codex = new Codex(config.codexExecutable, config.workspace);
     this.native = new NativeFollower();this.nativeTasks=new Map();this.nativeTimers=new Map();
     this.macNavigation=process.platform==='darwin'?new MacDesktopNavigation(this.native,this.codex):null;
@@ -70,19 +79,45 @@ export class Adapter extends EventEmitter {
     const inferred=t.projectId===undefined?(this.projectCache||[]).filter(p=>p.path&&(cwd===normalize(p.path)||cwd.startsWith(normalize(p.path)+'/'))).sort((a,b)=>b.path.length-a.path.length)[0]?.id:null;
     return {id:'desktop:'+t.id,toolId:'codex',title:t.title||'未命名会话',projectId:t.projectId||inferred||null,status:taskStatus(t.status),updatedAt:(t.updatedAt||0)*1000,source:'desktop',cwd:t.cwd||'',approvals:[],canApprove:false};
   }
+  refreshDesktopList() {
+    if (this.desktopListPending || Date.now()-(this.desktopListAt||0)<=30000) return;
+    this.desktopListAt=Date.now();
+    this.desktopListPending=this.desktop.call('list_threads',{limit:50}).then(r=>{
+      const threads=[...(r.pinnedThreads||[]),...(r.threads||[])];
+      this.desktopListed=threads.filter(t=>t.kind==='codex'&&(!t.hostId||t.hostId==='local')).map(t=>this.desktopTask(t));
+      const hosts=this.remoteDesktop.registerRows(threads);
+      if (!this.remoteHistoryPending && Date.now()-(this.remoteHistoryAt||0)>120000 && hosts.size) {
+        this.remoteHistoryAt=Date.now();
+        this.remoteHistoryPending=this.remoteDesktop.expand(this.desktop,hosts)
+          .catch(()=>{}).finally(()=>this.remoteHistoryPending=null);
+      }
+    }).catch(()=>{}).finally(()=>this.desktopListPending=null);
+  }
+  async remoteRef(id) {
+    if (!id.startsWith(remotePrefix)) return this.remoteDesktop.refs.get(id);
+    if (!this.remoteDesktop.refs.has(id)) {
+      this.refreshDesktopList();
+      await this.desktopListPending;
+      if (!this.remoteDesktop.refs.has(id)) await this.remoteHistoryPending;
+    }
+    const ref=this.remoteDesktop.refs.get(id);
+    if (!ref) throw Object.assign(Error('远程会话当前不可用，请确认 Codex 桌面已连接该主机'),{status:404});
+    return ref;
+  }
   async list() {
+    if(this.config.remoteDesktopSessions?.length && !this.remoteListPending && Date.now()-(this.remoteListAt||0)>15000){
+      this.remoteListPending=Promise.all(this.config.remoteDesktopSessions.map(async ref=>{
+        try{return await readRemoteDesktop(this.desktop,ref,{limit:1});}catch{return null;}
+      })).then(rows=>{this.remoteListed=rows.filter(Boolean);this.remoteListAt=Date.now();}).finally(()=>this.remoteListPending=null);
+    }
+    if(!this.remoteListed && this.remoteListPending)await this.remoteListPending;
     // Global desktop listing can wait on an unrelated offline remote host.
     // Probe the local endpoint independently and keep local history responsive.
     try {await this.desktop.discover();this.desktopOk=true;}catch{this.desktopOk=false;}
     this.nativeOk=false;
     if(!this.desktopOk)try{await this.native.connect();this.nativeOk=true;}catch{}
-    if(this.desktopOk&&!this.desktopListPending&&Date.now()-(this.desktopListAt||0)>30000){
-      this.desktopListAt=Date.now();
-      this.desktopListPending=this.desktop.call('list_threads',{limit:50}).then(r=>{
-        this.desktopListed=[...(r.pinnedThreads||[]),...(r.threads||[])].filter(t=>t.kind==='codex'&&(!t.hostId||t.hostId==='local')).map(t=>this.desktopTask(t));
-      }).catch(()=>{}).finally(()=>this.desktopListPending=null);
-    }
-    const desktop=this.desktopListed||[];
+    if(this.desktopOk)this.refreshDesktopList();
+    const desktop=[...(this.desktopListed||[]),...(this.remoteListed||[]),...this.remoteDesktop.rows.values()];
     if(this.config.codexExecutable&&Date.now()-this.indexedAt>60000&&!this.indexPromise){
       this.indexPromise=this.loadIndex().catch(()=>{}).finally(()=>this.indexPromise=null);
     }
@@ -103,8 +138,17 @@ export class Adapter extends EventEmitter {
     this.indexed=all;this.indexedAt=Date.now();
   }
   async detail(id,cursor) {
+    const remote=await this.remoteRef(id);
+    if(remote)return readRemoteDesktop(this.desktop,remote,{cursor,limit:10});
     if(id.startsWith('cli:')){const t=this.cli.tasks.get(id);if(!t)throw new Error('任务不存在');return t;}
-    if(id.startsWith('tool:')||id.startsWith('native:'))return this.toolbox.detail(id);
+    if(id.startsWith('tool:')||id.startsWith('native:')){
+      const task=await this.toolbox.detail(id);
+      if(id.startsWith('native:deepseek:')){
+        const requestId=this.dshCreations.requestForSession(this.toolbox.nativeRef(id).sessionId);
+        if(requestId){const r=await this.dshCreations.inspect(requestId,task);task.creationRequestId=requestId;task.initialDelivery=r.initialDelivery;}
+      }
+      return task;
+    }
     if (!id.startsWith('desktop:')) {
       const t=this.managed.get(id);if(!t)throw new Error('任务不存在');return t;
     }
@@ -192,7 +236,17 @@ export class Adapter extends EventEmitter {
       }
     }
   }
-  async create({instruction,projectId,mode,toolId,model,effort}) {
+  async create({instruction,projectId,mode,toolId,model,effort,requestId}) {
+    if(this.toolWake&&mode!=='managed'&&['codex','deepseek'].includes(toolId||'codex'))await this.ensureTool(toolId||'codex');
+    if(toolId==='deepseek'){
+      if(mode==='managed'||model||effort)throw Error('DSH 新建沿用原桌面账号和默认模型，不使用独立执行进程或模型覆盖');
+      const project=(await this.dispatch('projects')).find(p=>p.id===projectId&&p.toolId==='deepseek');
+      if(!project?.path)throw Error('请选择 DSH 已识别的真实工作目录');
+      if(!requestId)throw Error('DSH 新建需要持久请求号，请更新客户端');
+      const result=await this.dshCreations.createAndPrompt({cwd:project.path,instruction,requestId});
+      if(!result.sessionId)throw Object.assign(Error('原生新建结果尚未确认，请恢复原请求，不要重复创建'),{status:409});
+      return {id:'native:deepseek:'+encodeURIComponent(result.sessionId),toolId:'deepseek',source:'desktop',cwd:project.path,projectId,title:instruction.slice(0,48),status:'Pending',initialDelivery:result.initialDelivery,creationRequestId:requestId,messages:[],updatedAt:Date.now()};
+    }
     if(['claude-desktop','zcode'].includes(toolId))throw new Error('请先在电脑桌面新建对话，再在手机中打开并继续');
     if(toolId&&toolId!=='codex'){
       throw new Error('当前仅支持继续桌面原会话；不会新建独立命令行任务');
@@ -212,7 +266,7 @@ export class Adapter extends EventEmitter {
       const target=projectId?{type:'project',projectId,environment:{type:'local'}}:{type:'projectless'};
       if(projectId){const projects=await this.dispatch('projects');if(!projects.some(p=>p.id===projectId))throw new Error('项目不存在或不属于本机');}
       if(model){const models=await this.controls.catalog();if(!models.some(m=>m.id===model&&(!effort||m.efforts.includes(effort))))throw new Error('模型或思考强度不属于当前电脑');}
-      const r=await this.desktop.call('create_thread',{prompt:instruction,target,...(model?{model}:{}),...(effort?{thinking:effort}:{})});
+      const r=await this.desktop.call('create_thread',{prompt:instruction,target,...(model?{model}:{}),...(effort?{thinking:effort}:{})},requestId);
       const id=r.threadId||r.thread?.id;
       if(!id)throw new Error('桌面已收到新建请求，但尚未返回会话标识；请刷新列表，不要重复提交');
       return {id:'desktop:'+id,title:instruction.slice(0,48),projectId,status:'Running',source:'desktop',messages:[],approvals:[],canApprove:false,updatedAt:Date.now()};
@@ -223,8 +277,10 @@ export class Adapter extends EventEmitter {
     this.managed.set(id,t);this.loaded.add(id);this.changed(t);
     await this.send(id,{instruction});return t;
   }
-  async send(id,{instruction}) {
-    if(id.startsWith('native:')||id.startsWith('tool:agy:'))return this.toolbox.send(id,instruction);
+  async send(id,{instruction,requestId}) {
+    if(this.toolWake&&id.startsWith('desktop:'))await this.ensureTool('codex');
+    else if(this.toolWake&&id.startsWith('native:'))await this.ensureTool(id.split(':')[1]);
+    if(id.startsWith('native:'))return this.toolbox.send(id,instruction,id.startsWith('native:deepseek:')&&requestId?nativeCreationId(requestId):undefined);
     if(id.startsWith('cli:'))return this.cli.send(id,instruction);
     if(id.startsWith('desktop:')) {
       const options=this.controls.pending[id];
@@ -307,7 +363,62 @@ export class Adapter extends EventEmitter {
     }
     this.registerImages(t);this.changed(t);
   }
+  async ensureTool(tool){
+    const result=await this.toolWake.prepare(tool);
+    if(!result.ready)throw Object.assign(Error(result.message||'原应用尚未就绪'),{status:503});
+    this.toolbox.at=0;await this.toolbox.list();return result;
+  }
   async dispatch(method,args={}) {
+    const remoteOnly=typeof args.id==='string' &&
+      (args.id.startsWith(remotePrefix)||this.remoteDesktop.refs.has(args.id));
+    if(method==='prepareTool'){
+      const result=await this.toolWake.prepare(args.toolId);
+      if(result.ready){this.toolbox.at=0;await this.toolbox.list();}return result;
+    }
+    if(method==='prepareSession'){
+      if(remoteOnly)return {ready:false,state:'remote_observe_only'};
+      const tool=args.id.startsWith('desktop:')?'codex':/^native:(deepseek|kimi|claude-desktop|zcode):/.exec(args.id)?.[1];
+      return tool?this.ensureTool(tool):{ready:false,state:'history_only'};
+    }
+    if(remoteOnly&&
+      ['send','approve','interrupt','settings','queue','goal','sideChat','controls'].includes(method))throw Error('远端 Worker 当前仅观察，请使用原会话继续工作');
+    if(method==='messageStatus'){
+      if(!args.id.startsWith('native:deepseek:'))throw Error('仅支持 DSH 原会话');
+      const task=await this.toolbox.nativeDetail(args.id);
+      return {acknowledged:task.submittedRequests?.includes(nativeCreationId(args.requestId))===true};
+    }
+    if(method==='creationStatus'){
+      const r=await this.dshCreations.inspect(args.requestId),record=this.dshCreations.read(args.requestId);
+      return {...r,task:r.sessionId?{id:'native:deepseek:'+encodeURIComponent(r.sessionId),toolId:'deepseek',source:'desktop',cwd:record.cwd,status:'Pending',initialDelivery:r.initialDelivery,creationRequestId:args.requestId,updatedAt:Date.now()}:null};
+    }
+    // Router reads never navigate windows or restore a transcript in a new
+    // Agent process. Writes preserve the exact native conversation and settings.
+    if(method==='routerInspect'){
+      const remote=await this.remoteRef(args.id);
+      if(remote)return readRemoteDesktop(this.desktop,remote);
+      if(args.id.startsWith('native:')){const ref=this.toolbox.nativeRef(args.id),before=this.toolbox.bridge.identity(ref.toolId),t=await this.toolbox.detail(args.id);if(before!==this.toolbox.bridge.identity(ref.toolId))throw Error('Native instance changed');return {...t,instance:before};}
+      if(!args.id.startsWith('desktop:'))throw Error('Router requires an original desktop session');
+      const raw=args.id.slice(8);
+      try{await this.desktop.discover();}catch{}
+      try{return {...this.fromNative(await this.native.snapshot(raw)),instance:this.desktop.pipe?crypto.createHash('sha256').update(this.desktop.pipe).digest('hex'):this.native.owners.get(raw)};}catch{}
+      const r=await this.desktop.call('read_thread',{threadId:raw,hostId:'local',turnLimit:5,includeOutputs:false});
+      if(r.thread?.id!==raw)throw Error('Native session identity mismatch');
+      const task=this.desktopTask(r.thread);task.messages=[];
+      for(const turn of [...(r.turns||[])].reverse())for(const item of turn.items||[]){
+        if(['userMessage','agentMessage'].includes(item.type))task.messages.push({id:item.id,role:item.type==='userMessage'?'user':'agent',text:item.text||(item.content||[]).filter(c=>c.type==='text').map(c=>c.text).join('\n')});
+      }
+      if(r.turns?.[0]){task.status=taskStatus(r.turns[0].status);task.turnId=r.turns[0].id;}
+      task.instance=crypto.createHash('sha256').update(this.desktop.pipe||'').digest('hex');return task;
+    }
+    if(method==='routerSend'){
+      if(remoteOnly)throw Error('Remote Worker is observation-only; use its original conversation for execution');
+      if(args.id.startsWith('native:')){const ref=this.toolbox.nativeRef(args.id);if(args.expectedGeneration&&args.expectedGeneration!==this.toolbox.bridge.identity(ref.toolId))throw Error('Native instance changed');return this.toolbox.send(args.id,args.instruction,args.requestId);}
+      if(!args.id.startsWith('desktop:'))throw Error('Router requires an original desktop session');
+      if(args.expectedGeneration){const current=await this.dispatch('routerInspect',{id:args.id});if(current.instance!==args.expectedGeneration)throw Error('Native instance changed');}
+      // Never change the selected model, start SDK resume, or navigate a window.
+      await this.desktop.call('send_message_to_thread',{threadId:args.id.slice(8),hostId:'local',prompt:args.instruction},args.requestId);
+      return {accepted:true,requestId:args.requestId};
+    }
     if(method==='tools'){
       const tools=await this.toolbox.tools();
       if(process.platform!=='darwin')return tools;

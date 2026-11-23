@@ -10,6 +10,8 @@ import 'package:mydex_mobile/controller.dart';
 import 'package:mydex_mobile/models.dart';
 import 'package:mydex_mobile/services/api.dart';
 import 'package:mydex_mobile/services/storage.dart';
+import 'package:mydex_mobile/services/dsh_create_outbox.dart';
+import 'package:mydex_mobile/services/router_command_journal.dart';
 import 'package:mydex_mobile/pages/home.dart';
 import 'package:mydex_mobile/widgets/message.dart';
 import 'package:mydex_mobile/pages/controls.dart';
@@ -468,8 +470,19 @@ void main() {
   }, tags: ['golden']);
 }
 
-AppController fixture() {
-  final c = AppController(LocalStorage());
+AppController fixture({DshCreateOutbox? creationOutbox}) {
+  Json operationRecords = {};
+  Json routerRecords = {};
+  final c = AppController(LocalStorage(),
+      routerCommandJournal: RouterCommandJournal(
+        read: () async => jsonDecode(jsonEncode(routerRecords)),
+        save: (value) async {routerRecords = jsonDecode(jsonEncode(value));}),
+      dshCreateOutbox: creationOutbox ??
+          DshCreateOutbox(
+              read: () async => jsonDecode(jsonEncode(operationRecords)),
+              save: (value) async {
+                operationRecords = jsonDecode(jsonEncode(value));
+              }));
   c.initialized = true;
   c.connected = true;
   c.settings = const ConnectionSettings(

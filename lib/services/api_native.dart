@@ -9,12 +9,28 @@ import '../models.dart';
 import 'api_exception.dart';
 import 'mesh_proxy.dart';
 import 'tunnel_proxy.dart';
+import 'p2p_native.dart';
 
 class GatewayApi {
   final ConnectionSettings settings;
   late final HttpClient client;
   Future<void>? _networkReady;
   TunnelProxy? _tunnel;
+  String? get connectionRoute => _tunnel?.lastRoute;
+  Future<bool> startP2pTesting() async {
+    if (!const bool.fromEnvironment('MYDEX_P2P_TEST') ||
+        !Platform.isAndroid ||
+        settings.token.isEmpty) {
+      return false;
+    }
+    await prepareNetwork();
+    final tunnel = _tunnel;
+    if (tunnel == null) return false;
+    tunnel.p2p ??= P2pTransport(
+        (sdp) => post('/api/private/p2p/answer', {'sdp': sdp}));
+    await tunnel.p2p!.warm();
+    return tunnel.p2p!.isReady;
+  }
   Future<void> prepareNetwork() => _networkReady ??= _prepareNetwork();
   Future<void> _prepareNetwork() async {
     if (settings.relayUrl.isNotEmpty) {
@@ -118,6 +134,23 @@ class GatewayApi {
 
   Future<Json> get(String path) async =>
       Map<String, dynamic>.from(jsonDecode(utf8.decode(await bytes(path))));
+
+  Stream<List<int>> privateUpdateBytes(String path) async* {
+    if (path != '/api/update/apk' && path != '/api/update/stream/apk') {
+      throw ArgumentError('Invalid private update path');
+    }
+    await prepareNetwork();
+    final req = await client.getUrl(uri(path));
+    req.followRedirects = false;
+    req.headers.set(HttpHeaders.authorizationHeader, 'Bearer ${settings.token}');
+    final response = await req.close().timeout(const Duration(seconds: 55));
+    if (response.statusCode != HttpStatus.ok) {
+      final subscription = response.listen(null);
+      await subscription.cancel();
+      throw ApiException('私测更新下载失败', response.statusCode);
+    }
+    yield* response.timeout(const Duration(seconds: 30));
+  }
   Future<Json> post(String path, Json body, {String? requestId}) async =>
       Map<String, dynamic>.from(jsonDecode(utf8.decode(await bytes(path,
           method: 'POST', body: body, requestId: requestId))));

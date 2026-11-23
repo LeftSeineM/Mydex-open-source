@@ -1,4 +1,4 @@
-# Mydex 源码
+# Mydex Superagent 源码
 
 Mydex 把电脑上的 Coding 工具和已有会话连接到手机。项目使用 MIT 许可证。
 
@@ -7,3 +7,7 @@ Mydex 把电脑上的 Coding 工具和已有会话连接到手机。项目使用
 - [Superagent 分支](https://github.com/LeftSeineM/Mydex-open-source/tree/superagent) 包含独立预览线，包括 Router、项目简报、执行权限和 Android P2P 私测。
 
 安装包见 [公开下载仓库](https://github.com/LeftSeineM/Mydex-mobile/releases)。构建见 [构建说明](docs/BUILD.md)。公开源码用独立快照整理。运行时、第三方安装包、实际部署配置和签名材料由部署者自行准备。
+
+Superagent Android 私测构建启用 `MYDEX_SUPERAGENT_TEST`。P2P 由 `MYDEX_P2P_TEST` 单独启用。旧 Flutter 3.27 构建需使用相容的 WebRTC 插件或调整插件的 SurfaceProducer 回调；本机依赖覆盖不随源码分发。
+
+如需构建 P2P 探测组件，请运行 `npm ci --prefix desktop/headless/p2p-lab` 安装原生 Node 依赖。

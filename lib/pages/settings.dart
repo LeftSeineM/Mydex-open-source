@@ -27,6 +27,7 @@ class _SettingsPageState extends State<SettingsPage> {
   late List<String> directUrls;
   late double textScale;
   bool obscure = true, saving = false;
+  bool testingP2p = false;
   String? failure;
   String versionLabel = '';
   @override
@@ -343,12 +344,32 @@ class _SettingsPageState extends State<SettingsPage> {
                                             ? const Color(0xff91b9a0)
                                             : const Color(0xffdb9391)),
                                         const SizedBox(width: 8),
-                                        Text(c.connected ? '实时连接已建立' : '尚未连接',
+                                        Text(c.connected ? (c.api?.connectionRoute ?? '实时连接已建立') : '尚未连接',
                                             style:
                                                 const TextStyle(fontSize: 13))
                                       ])),
                               const SizedBox(height: 20),
                               if (!kIsWeb) ...[
+                                if (const bool.fromEnvironment('MYDEX_P2P_TEST') && relayUrl.isNotEmpty)
+                                  ListTile(
+                                    leading: const Icon(Icons.route_outlined),
+                                    title: const Text('测试 P2P 直连'),
+                                    subtitle: Text(testingP2p ? '正在尝试直连…' : '手动开始，本次连接有效'),
+                                    onTap: testingP2p ? null : () async {
+                                      setState(() => testingP2p = true);
+                                      var ready = false;
+                                      try {
+                                        ready = await c.api?.startP2pTesting() ?? false;
+                                      } catch (_) {
+                                        // The paired connection remains available.
+                                      }
+                                      if (!mounted) return;
+                                      setState(() => testingP2p = false);
+                                      ScaffoldMessenger.of(this.context).showSnackBar(SnackBar(
+                                        content: Text(ready ? '直连已建立，新请求可以使用 P2P' : '未建立 P2P，继续使用原连接'),
+                                      ));
+                                    },
+                                  ),
                                 TextFormField(
                                     controller: address,
                                     autocorrect: false,
@@ -464,7 +485,7 @@ class _SettingsPageState extends State<SettingsPage> {
                                   leading: const Icon(Icons.language),
                                   title: const Text('官网与下载'),
                                   subtitle:
-                                      const Text('app.leftseinem.dpdns.org'),
+                                      const Text('app.leftseinem.com'),
                                   onTap: () async {
                                     try {
                                       await const MethodChannel(
@@ -473,7 +494,7 @@ class _SettingsPageState extends State<SettingsPage> {
                                     } catch (_) {
                                       await Clipboard.setData(const ClipboardData(
                                           text:
-                                              'https://app.leftseinem.dpdns.org/'));
+                                              'https://app.leftseinem.com/'));
                                     }
                                   }),
                               const SizedBox(height: 16),
@@ -529,4 +550,4 @@ class _SettingsPageState extends State<SettingsPage> {
                                       fontSize: 12, color: Colors.grey)),
                             ]))))));
   }
-}
+}

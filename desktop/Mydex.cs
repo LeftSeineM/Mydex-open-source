@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Collections;
 using System.Diagnostics;
@@ -15,11 +15,27 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyVersion("0.4.26.0")]
 [assembly: System.Reflection.AssemblyFileVersion("0.4.26.0")]
 
+static class DesktopProfile {
+ internal static string Identity(string directory){
+  var normalized=Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar,Path.AltDirectorySeparatorChar).ToUpperInvariant();
+  using(var sha=System.Security.Cryptography.SHA256.Create())return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(normalized))).Replace("-","").Substring(0,16);
+ }
+ internal static bool Shared {get{return !String.IsNullOrEmpty(Environment.GetEnvironmentVariable("MYDEX_INSTALL_ROOT"));}}
+ internal static string Name {get{return Shared?"MydexShared-"+Identity(Environment.GetEnvironmentVariable("MYDEX_DATA_DIR")??Path.Combine(Environment.GetEnvironmentVariable("MYDEX_INSTALL_ROOT"),"data")):"MydexMobileConnector";}}
+ internal static string Launcher {get{
+  if(!Shared)return Application.ExecutablePath;
+  var root=Environment.GetEnvironmentVariable("MYDEX_INSTALL_ROOT");
+  var launcher=Path.Combine(root,"Mydex.exe");
+  if(!File.Exists(launcher))throw new Exception("未找到固定桌面入口，暂不设置自启，避免绑定即将被替换的版本目录。");
+  return launcher;
+ }}
+}
+
 class Bridge : IDisposable {
  readonly Process p; readonly StreamWriter input; readonly JavaScriptSerializer json=new JavaScriptSerializer{MaxJsonLength=16000000};
  readonly Dictionary<int,TaskCompletionSource<Dictionary<string,object>>> pending=new Dictionary<int,TaskCompletionSource<Dictionary<string,object>>>(); int seq;
  public Bridge(string root){
-  p=new Process{StartInfo=new ProcessStartInfo(Path.Combine(root,"runtime/node.exe"),"\""+Path.Combine(root,"desktop/gui-bridge.mjs")+"\""){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true,StandardOutputEncoding=Encoding.UTF8,StandardErrorEncoding=Encoding.UTF8,WorkingDirectory=root}};
+  p=new Process{StartInfo=new ProcessStartInfo(Path.Combine(root,"runtime/node.exe"),"\""+Path.Combine(root,"desktop/connection-entry.mjs")+"\""){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true,StandardOutputEncoding=Encoding.UTF8,StandardErrorEncoding=Encoding.UTF8,WorkingDirectory=root}};
   p.OutputDataReceived+=(s,e)=>{if(e.Data==null)return;try{var m=json.Deserialize<Dictionary<string,object>>(e.Data);var id=Convert.ToInt32(m["id"]);TaskCompletionSource<Dictionary<string,object>> t;lock(pending){if(!pending.TryGetValue(id,out t))return;pending.Remove(id);}if(m.ContainsKey("error"))t.TrySetException(new Exception(m["error"].ToString()));else t.TrySetResult((Dictionary<string,object>)m["result"]);}catch{}};
   p.EnableRaisingEvents=true;p.Exited+=(s,e)=>{lock(pending){foreach(var t in pending.Values)t.TrySetException(new Exception("后台连接程序已退出，请重新打开 Mydex"));pending.Clear();}};
   p.Start();input=new StreamWriter(p.StandardInput.BaseStream,new UTF8Encoding(false)){AutoFlush=true};p.BeginOutputReadLine();p.ErrorDataReceived+=(s,e)=>{};p.BeginErrorReadLine();
@@ -79,7 +95,7 @@ class Mydex : Form {
   nav.Controls.Add(new Panel{Height=54,Width=140});nav.Controls.Add(LabelText("桌面连接器 0.4.26",9,muted));nav.Controls.Add(LabelText("数据留在你的电脑",9,muted));
   var footer=new Panel{Dock=DockStyle.Bottom,Height=48,Padding=new Padding(24,10,12,8),BackColor=Color.FromArgb(249,250,252)};message.Dock=DockStyle.Fill;message.Text="正在检查本机连接…";message.ForeColor=muted;footer.Controls.Add(message);
   Controls.Add(page);Controls.Add(nav);Controls.Add(footer);
-  var menu=new ContextMenuStrip();menu.Items.Add("打开 Mydex",null,(s,e)=>Restore());menu.Items.Add("启动连接",null,async(s,e)=>{try{await bridge.Call("start");await RefreshState();}catch(Exception ex){Error(ex.Message);Restore();}});menu.Items.Add("停止本应用启动的连接",null,async(s,e)=>{try{await bridge.Call("stop");await RefreshState();}catch(Exception ex){Error(ex.Message);}});menu.Items.Add(new ToolStripSeparator());menu.Items.Add("检查更新",null,async(s,e)=>{Restore();ShowPage("settings");await CheckUpdate();});menu.Items.Add("退出 Mydex",null,(s,e)=>{quitting=true;Close();});
+  var menu=new ContextMenuStrip();menu.Items.Add("打开 Mydex",null,(s,e)=>Restore());menu.Items.Add("启动连接",null,async(s,e)=>{try{await bridge.Call("start");await RefreshState();}catch(Exception ex){Error(ex.Message);Restore();}});menu.Items.Add("停止连接…",null,async(s,e)=>{try{await StopConnection();}catch(Exception ex){Error(ex.Message);}});menu.Items.Add(new ToolStripSeparator());menu.Items.Add("检查更新",null,async(s,e)=>{Restore();ShowPage("settings");await CheckUpdate();});menu.Items.Add("退出 Mydex",null,(s,e)=>{quitting=true;Close();});
   tray.Icon=Icon;tray.Text="Mydex · 正在检查连接";tray.ContextMenuStrip=menu;tray.Visible=true;tray.DoubleClick+=(s,e)=>Restore();tray.BalloonTipClicked+=(s,e)=>{Restore();ShowPage("settings");};
   bridge=new Bridge(AppDomain.CurrentDomain.BaseDirectory);ShowPage("overview");
   using(var g=CreateGraphics()){var f=g.DpiX/96f;Scale(new SizeF(f,f));}layoutReady=true;
@@ -87,6 +103,14 @@ class Mydex : Form {
   FormClosing+=(s,e)=>{if(!quitting&&e.CloseReason==CloseReason.UserClosing){e.Cancel=true;Hide();tray.ShowBalloonTip(2000,"Mydex","连接继续在托盘运行。右键托盘图标可退出。",ToolTipIcon.Info);}else{timer.Stop();tray.Visible=false;tray.Dispose();bridge.Dispose();}};
  }
  void Restore(){Show();WindowState=FormWindowState.Normal;Activate();}
+ async Task StopConnection(){
+  var current=await bridge.Call("status");
+  if(!B(current,"connected"))return;
+  if(B(current,"sharedOwner")){
+   if(MessageBox.Show("停止共享连接会断开手机和插件对这台电脑的访问。原软件中的任务不会因此取消，记录和配对保留。\n\n如果只想退出窗口，请选择取消后退出 Mydex。是否停止共享连接？","Mydex · 停止共享连接",MessageBoxButtons.YesNo,MessageBoxIcon.Question)!=DialogResult.Yes)return;
+  }else if(!B(current,"owned"))throw new Exception("此连接由其他程序管理，请到原入口停止。");
+  await bridge.Call("stop");await RefreshState();
+ }
  async Task RefreshState(){if(refreshing)return;refreshing=true;try{state=await bridge.Call("status",new {force=view=="tools"});configured=B(state,"configured");owned=B(state,"owned");role=S(state,"role");var ok=B(state,"connected");connection.Text=!configured?"连接你的第一台电脑":ok?"本机服务已就绪":owned?"正在启动连接服务":"连接服务已停止";connection.ForeColor=ok?Color.FromArgb(48,124,87):ink;summary.Text=!configured?"配置本机地址，然后复制配对信息到手机。":"手机直接连接这台电脑；多台电脑在手机中统一管理。"+"\n"+(ok&&!owned?"检测到外部连接服务，本应用不会重复启动它。":"关闭窗口后，连接可继续在托盘运行。");tray.Text="Mydex · "+connection.Text;message.Text=S(state,"error");if(message.Text.Length==0){message.ForeColor=muted;message.Text="上次检查 "+DateTime.Now.ToString("HH:mm:ss")+"  ·  "+(configured?"配置已保存":"等待首次设置");}var update=UpdateState();if(S(update,"phase")=="available"&&S(update,"latest")!=notifiedVersion){notifiedVersion=S(update,"latest");tray.ShowBalloonTip(5000,"Mydex 有新版本",notifiedVersion+" 已可下载，点击打开更新设置。",ToolTipIcon.Info);}if(view=="tools"){FillTools();UpdateBridgeHelp();message.Text=BridgeStatusText();}if(view=="settings")PaintUpdate();}catch(Exception ex){Error(ex.Message);}finally{refreshing=false;}}
  void ShowPage(string name){view=name;foreach(var entry in navButtons){entry.Value.Selected=entry.Key==name;entry.Value.Invalidate();}
   if(name=="overview"){
@@ -96,7 +120,7 @@ class Mydex : Form {
    summary.AutoSize=false;summary.Dock=DockStyle.Bottom;summary.Height=48;summary.Font=Font;summary.ForeColor=muted;card.Controls.Add(summary);s.Controls.Add(card);
    var row=new FlowLayoutPanel{AutoSize=true,MaximumSize=new Size(760,0)};
    row.Controls.Add(Btn("启动连接",async()=>{if(B(state,"connected"))throw new Exception("连接已经运行，无需重复启动");await bridge.Call("start");await RefreshState();},true));
-   row.Controls.Add(Btn("停止连接",async()=>{if(!owned)throw new Exception("此连接由外部程序管理，请到原计划任务或启动窗口停止");await bridge.Call("stop");await RefreshState();}));
+   row.Controls.Add(Btn("停止连接",StopConnection));
    row.Controls.Add(Btn("配对手机",()=>{ShowPage("pair");return Task.CompletedTask;}));s.Controls.Add(row);
    s.Controls.Add(LabelText("快速开始",12));
    var quick=new FlowLayoutPanel{AutoSize=true,MaximumSize=new Size(760,0),Margin=new Padding(0,0,0,12)};
@@ -127,7 +151,10 @@ class Mydex : Form {
    s.Controls.Add(LabelText("点击生成二维码，按提示在手机上完成配对。",10,muted));
    s.Controls.Add(LabelText("一次只显示所选方式的二维码。二维码过期后可刷新。\n添加其他电脑时，在那台电脑重复配对即可。",9,muted));
   }else{
-   Header("设置","启动行为与本机数据。");var s=Stack(Body());var auto=new CheckBox{Text="开机登录后自动启动 Mydex，并保持在托盘",AutoSize=true,Margin=new Padding(0,20,0,20),Checked=Autostart()};auto.CheckedChanged+=(a,e)=>{try{using(var key=Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")){if(auto.Checked)key.SetValue("MydexMobileConnector","\""+Application.ExecutablePath+"\" --tray");else key.DeleteValue("MydexMobileConnector",false);}message.Text="自启设置已保存";}catch(Exception ex){Error(ex.Message);}};s.Controls.Add(auto);s.Controls.Add(LabelText("关闭窗口会收起到托盘。退出应用会停止由本应用启动的连接；原来的外部服务不受影响。",10,muted));s.Controls.Add(Btn("接入已有本机配置",Attach));s.Controls.Add(Btn("打开本机数据目录",()=>{Process.Start("explorer.exe",S(state,"dataRoot"));return Task.CompletedTask;}));s.Controls.Add(LabelText("Mydex 桌面连接器 0.4.26",13));s.Controls.Add(Btn("官网与下载",()=>{Process.Start("https://app.leftseinem.dpdns.org/");return Task.CompletedTask;}));updateStatus=LabelText("正在读取更新状态…",10);updateNotes=LabelText("",9,muted);s.Controls.Add(updateStatus);s.Controls.Add(updateNotes);var updateRow=new FlowLayoutPanel{AutoSize=true,WrapContents=true};updateRow.Controls.Add(Btn("检查更新",CheckUpdate));updateAction=Btn("下载更新",ApplyUpdate,true);updateRow.Controls.Add(updateAction);s.Controls.Add(updateRow);s.Controls.Add(LabelText("启动后自动检查；下载、安装由你确认。更新保留连接配置。",9,muted));PaintUpdate();s.Controls.Add(LabelText("联系开发者 · 348897402@qq.com",10));s.Controls.Add(Btn("复制开发者邮箱",()=>{Clipboard.SetText("348897402@qq.com");message.Text="邮箱已复制。反馈时请注明版本和复现步骤，不要发送令牌或私人日志。";return Task.CompletedTask;}));s.Controls.Add(LabelText("无需安装 Node。模型、工具账号和 API 配置沿用电脑现有设置。\n当前提供 Windows x64 版本。",10,muted));
+   Header("设置","启动行为与本机数据。");var s=Stack(Body());var auto=new CheckBox{Text="开机登录后自动启动 Mydex，并保持在托盘",AutoSize=true,Margin=new Padding(0,20,0,20),Checked=Autostart()};auto.CheckedChanged+=(a,e)=>{try{using(var key=Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")){if(auto.Checked)key.SetValue(DesktopProfile.Name,"\""+DesktopProfile.Launcher+"\" --tray");else key.DeleteValue(DesktopProfile.Name,false);}message.Text="自启设置已保存";}catch(Exception ex){Error(ex.Message);}};s.Controls.Add(auto);s.Controls.Add(LabelText("关闭窗口会收起到托盘。退出应用会停止由本应用启动的连接；原来的外部服务不受影响。",10,muted));s.Controls.Add(Btn("接入已有本机配置",Attach));s.Controls.Add(Btn("打开本机数据目录",()=>{Process.Start("explorer.exe",S(state,"dataRoot"));return Task.CompletedTask;}));s.Controls.Add(LabelText("Mydex 桌面连接器 0.4.26",13));s.Controls.Add(Btn("官网与下载",()=>{Process.Start("https://app.leftseinem.dpdns.org/");return Task.CompletedTask;}));updateStatus=LabelText("正在读取更新状态…",10);updateNotes=LabelText("",9,muted);s.Controls.Add(updateStatus);s.Controls.Add(updateNotes);var updateRow=new FlowLayoutPanel{AutoSize=true,WrapContents=true};updateRow.Controls.Add(Btn("检查更新",CheckUpdate));updateAction=Btn("下载更新",ApplyUpdate,true);updateRow.Controls.Add(updateAction);s.Controls.Add(updateRow);s.Controls.Add(LabelText("启动后自动检查；下载、安装由你确认。更新保留连接配置。",9,muted));PaintUpdate();s.Controls.Add(LabelText("联系开发者 · 348897402@qq.com",10));s.Controls.Add(Btn("复制开发者邮箱",()=>{Clipboard.SetText("348897402@qq.com");message.Text="邮箱已复制。反馈时请注明版本和复现步骤，不要发送令牌或私人日志。";return Task.CompletedTask;}));s.Controls.Add(LabelText("无需安装 Node。模型、工具账号和 API 配置沿用电脑现有设置。\n当前提供 Windows x64 版本。",10,muted));
+  }
+  if(name=="settings"&&B(state,"sharedOwner")){
+   foreach(Control outer in page.Controls)foreach(Control inner in outer.Controls)if(inner is FlowLayoutPanel)inner.Controls.Add(Btn("安装私测后台更新",UpdateSharedService));
   }
   if(layoutReady){using(var g=CreateGraphics()){var f=g.DpiX/96f;foreach(Control c in page.Controls)c.Scale(new SizeF(f,f));}}
   if(!refreshing){var ignored=RefreshState();}
@@ -135,8 +162,26 @@ class Mydex : Form {
  Dictionary<string,object> UpdateState(){return state!=null&&state.ContainsKey("update")?state["update"] as Dictionary<string,object>:null;}
  void PaintUpdate(){if(updateStatus==null||updateStatus.IsDisposed)return;var u=UpdateState();var phase=S(u,"phase");updateStatus.Text=S(u,"message");updateNotes.Text=S(u,"notes");if(updateAction!=null&&!updateAction.IsDisposed){updateAction.Text=phase=="ready"?"安装并重启":phase=="downloading"?"下载中 "+S(u,"progress")+"%":"下载更新";updateAction.Enabled=phase=="available"||phase=="ready";}}
  async Task CheckUpdate(){try{message.Text="正在检查更新…";await bridge.Call("checkUpdate");await RefreshState();PaintUpdate();}catch(Exception ex){Error(ex.Message);}}
+ async Task UpdateSharedService(){
+  if(!B(state,"sharedOwner"))throw new Exception("当前连接不是共享后台，请使用普通更新入口。");
+  using(var picker=new FolderBrowserDialog{Description="选择解压后的 Mydex 签名私测后台更新包"}){
+   if(picker.ShowDialog(this)!=DialogResult.OK)return;
+   var checkedPackage=await bridge.Call("inspectServiceUpdate",new {directory=picker.SelectedPath});
+   if(MessageBox.Show("后台版本："+S(checkedPackage,"current")+" → "+S(checkedPackage,"version")+"\n\n更新会短暂断开连接并重新启动后台，配置和配对保留。启动失败会尝试回退。请先等待正在发送或审批的操作完成。是否继续？","Mydex · 私测后台更新",MessageBoxButtons.YesNo,MessageBoxIcon.Question)!=DialogResult.Yes)return;
+   var started=await bridge.Call("installServiceUpdate");var id=S(started,"operation");
+   message.Text="正在更新后台，操作编号："+id;
+   for(var n=0;n<120;n++){
+    await Task.Delay(1000);if(IsDisposed)return;
+    var result=await bridge.Call("serviceUpdateOperation",new {id=id});
+    if(B(result,"pending"))continue;
+    if(!B(result,"ok"))throw new Exception("后台更新未完成，请核对服务状态。操作编号："+id);
+    await RefreshState();message.Text="后台已更新至 "+S(result,"version")+"，原配置保留。";return;
+   }
+   message.Text="后台更新仍待确认，请勿重复安装。操作编号："+id;
+  }
+ }
  async Task ApplyUpdate(){var u=UpdateState();if(S(u,"phase")=="ready"){if(MessageBox.Show("现在安装更新并重启 Mydex？连接会短暂中断，已有配置保留。请先等待正在发送或审批的操作完成。","Mydex 更新",MessageBoxButtons.YesNo,MessageBoxIcon.Question)!=DialogResult.Yes)return;await bridge.Call("installUpdate");quitting=true;Close();}else{await bridge.Call("downloadUpdate");await RefreshState();PaintUpdate();}}
- bool Autostart(){using(var k=Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run"))return k!=null&&k.GetValue("MydexMobileConnector")!=null;}
+ bool Autostart(){using(var k=Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run"))return k!=null&&k.GetValue(DesktopProfile.Name)!=null;}
  void FillTools(){if(grid==null||grid.IsDisposed||state==null||!state.ContainsKey("tools"))return;grid.Rows.Clear();foreach(Dictionary<string,object> t in (IEnumerable)state["tools"]){var c=(Dictionary<string,object>)t["capabilities"];grid.Rows.Add(S(t,"name"),B(t,"running")?"运行中":"未运行",B(c,"history")?(S(t,"id")=="codex"?"桌面索引":S(t,"sessionCount")+" 个会话"):"未接通",B(c,"send")?"原桌面":"未接通",S(t,"note"));}grid.ClearSelection();}
  bool ToolConnected(string id){if(state==null||!state.ContainsKey("tools"))return false;foreach(Dictionary<string,object> t in (IEnumerable)state["tools"])if(S(t,"id")==id)return B(t["capabilities"] as Dictionary<string,object>,"send");return false;}
  async Task ConfigureHub(){var d=await bridge.Call("defaults");using(var f=new Form{Text="Mydex · 设置主机",Size=new Size(650,470),StartPosition=FormStartPosition.CenterParent,Font=Font,MinimizeBox=false,MaximizeBox=false,FormBorderStyle=FormBorderStyle.FixedDialog}){var s=Stack(f);s.Padding=new Padding(24);var fields=new Dictionary<string,TextBox>();foreach(var item in new[]{new[]{"name","电脑名称"},new[]{"address","手机可访问的 HTTPS 地址"},new[]{"codex","Codex 程序路径（自动检测）"},new[]{"thread","已有 Codex 会话 ID（自动检测）"}}){s.Controls.Add(LabelText(item[1]));var box=new TextBox{Width=570,Text=S(d,item[0]),Margin=new Padding(0,0,0,12)};s.Controls.Add(box);fields[item[0]]=box;}s.Controls.Add(LabelText("网页中继无需公网地址；保留自动填写的本机地址即可。",9,muted));s.Controls.Add(Btn("保存并启动",async()=>{await bridge.Call("configureHub",fields.ToDictionary(x=>x.Key,x=>(object)x.Value.Text.Trim()));await bridge.Call("start");f.Close();await RefreshState();},true));ScaleDialog(f);f.ShowDialog(this);}}
@@ -217,5 +262,6 @@ class Mydex : Form {
  }
  void ScaleDialog(Form dialog){dialog.AutoScaleMode=AutoScaleMode.None;using(var g=CreateGraphics()){var scale=g.DpiX/96f;dialog.Scale(new SizeF(scale,scale));}}
  string Prompt(string label,string value){using(var f=new Form{Text="Mydex",Size=new Size(610,200),StartPosition=FormStartPosition.CenterParent,Font=Font}){var s=Stack(f);s.Padding=new Padding(20);s.Controls.Add(LabelText(label));var t=new TextBox{Text=value,Width=540};s.Controls.Add(t);var b=new Button{Text="确认",DialogResult=DialogResult.OK,AutoSize=true,Margin=new Padding(0,12,0,0)};s.Controls.Add(b);f.AcceptButton=b;ScaleDialog(f);return f.ShowDialog(this)==DialogResult.OK?t.Text.Trim():null;}}
- [STAThread] static void Main(string[] args){bool fresh;using(var mutex=new Mutex(true,"Local\\MydexMobileConnector",out fresh)){if(!fresh&&!args.Contains("--qa")){MessageBox.Show("Mydex 已在运行，请从系统托盘打开窗口。","Mydex");return;}Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);try{var form=new Mydex(args.Contains("--tray"));if(args.Contains("--qa")){form.Shown+=async(a,e)=>{try{while(form.refreshing)await Task.Delay(100);await form.RefreshState();if(form.state==null)throw new Exception(form.message.Text);form.ShowPage("tools");form.PerformLayout();await Task.Delay(300);var dir=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"qa");Directory.CreateDirectory(dir);using(var image=new Bitmap(form.Width,form.Height)){form.DrawToBitmap(image,new Rectangle(0,0,form.Width,form.Height));image.Save(Path.Combine(dir,"tools.png"));}File.WriteAllText(Path.Combine(dir,"result.txt"),"toolRows="+form.grid.Rows.Count+"; arrayType="+form.state["tools"].GetType().FullName);foreach(var capture in new[]{"overview","pair","settings"}){form.ShowPage(capture);form.PerformLayout();await Task.Delay(200);using(var image=new Bitmap(form.Width,form.Height)){form.DrawToBitmap(image,new Rectangle(0,0,form.Width,form.Height));image.Save(Path.Combine(dir,capture+".png"));}if(capture=="pair"){form.selectPairingMode(1);form.PerformLayout();using(var image=new Bitmap(form.Width,form.Height)){form.DrawToBitmap(image,new Rectangle(0,0,form.Width,form.Height));image.Save(Path.Combine(dir,"pair-web.png"));}}}await form.ShowPairingQr(true);}catch(Exception ex){File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"qa-error.txt"),ex.ToString());}finally{form.quitting=true;form.Close();}};}Application.Run(form);}catch(Exception e){MessageBox.Show("Mydex 启动失败："+e.Message,"Mydex");}}}
+ [STAThread] static void Main(string[] args){bool fresh;using(var mutex=new Mutex(true,"Local\\"+DesktopProfile.Name,out fresh)){if(!fresh&&!args.Contains("--qa")){MessageBox.Show("Mydex 已在运行，请从系统托盘打开窗口。","Mydex");return;}Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);try{var form=new Mydex(args.Contains("--tray"));if(args.Contains("--qa")){form.Shown+=async(a,e)=>{try{while(form.refreshing)await Task.Delay(100);await form.RefreshState();if(form.state==null)throw new Exception(form.message.Text);form.ShowPage("tools");form.PerformLayout();await Task.Delay(300);var dir=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"qa");Directory.CreateDirectory(dir);using(var image=new Bitmap(form.Width,form.Height)){form.DrawToBitmap(image,new Rectangle(0,0,form.Width,form.Height));image.Save(Path.Combine(dir,"tools.png"));}File.WriteAllText(Path.Combine(dir,"result.txt"),"toolRows="+form.grid.Rows.Count+"; arrayType="+form.state["tools"].GetType().FullName);foreach(var capture in new[]{"overview","pair","settings"}){form.ShowPage(capture);form.PerformLayout();await Task.Delay(200);using(var image=new Bitmap(form.Width,form.Height)){form.DrawToBitmap(image,new Rectangle(0,0,form.Width,form.Height));image.Save(Path.Combine(dir,capture+".png"));}if(capture=="pair"){form.selectPairingMode(1);form.PerformLayout();using(var image=new Bitmap(form.Width,form.Height)){form.DrawToBitmap(image,new Rectangle(0,0,form.Width,form.Height));image.Save(Path.Combine(dir,"pair-web.png"));}}}await form.ShowPairingQr(true);}catch(Exception ex){File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"qa-error.txt"),ex.ToString());}finally{form.quitting=true;form.Close();}};}Application.Run(form);}catch(Exception e){MessageBox.Show("Mydex 启动失败："+e.Message,"Mydex");}}}
 }
+

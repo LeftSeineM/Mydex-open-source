@@ -18,10 +18,22 @@ export function createRelay({origin,allowedOrigins=[],dataFile,secureCookies=tru
   let db=fs.existsSync(dataFile)?JSON.parse(fs.readFileSync(dataFile,'utf8')):{users:[],devices:[]};
   const save=()=>{fs.mkdirSync(path.dirname(dataFile),{recursive:true});fs.writeFileSync(dataFile+'.tmp',JSON.stringify(db),{mode:0o600});fs.renameSync(dataFile+'.tmp',dataFile);};
   const deliver=sendVerification||emailSender(mailConfigFile), challenges=new Map(), mailRates=new Map();
-  const sessions=new Map(),pairs=new Map(),hosts=new Map(),pending=new Map(),channels=new Map(),tickets=new Map(),rates=new Map();
+  // Persist only one-way hashes of random login tokens, never cookies/passwords.
+  const sessionDays=30;
+  const sessions=new Map((db.sessions||[]).filter(([key,value])=>/^[a-f0-9]{64}$/.test(key)&&value.expires>Date.now()&&db.users.some(u=>u.id===value.user&&hash(u.digest)===value.accountVersion)));
+  const saveSessions=()=>{db.sessions=[...sessions];save();};
+  const pairs=new Map(),hosts=new Map(),pending=new Map(),channels=new Map(),tickets=new Map(),rates=new Map();
   const cookieName=secureCookies?'__Host-mydex':'mydex_test';
+  const csrfCookie=secureCookies?'__Host-mydex-csrf':'mydex_csrf_test';
+  const readCookie=(req,name)=>(req.headers.cookie||'').split(';').map(s=>s.trim()).find(s=>s.startsWith(name+'='))?.slice(name.length+1)||'';
+  function verifiedBrowser(req){
+    if(acceptedOrigins.has(req.headers.origin))return true;
+    if(req.headers.origin&&req.headers.origin!=='null')return false;
+    const token=req.headers['x-mydex-csrf'],cookie=readCookie(req,csrfCookie);
+    return typeof token==='string'&&/^[A-Za-z0-9_-]{43}$/.test(token)&&cookie.length===43&&crypto.timingSafeEqual(Buffer.from(token),Buffer.from(cookie));
+  }
   const json=(res,status,value)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});res.end(JSON.stringify(value));};
-  function session(req){const match=(req.headers.cookie||'').split(';').map(s=>s.trim()).find(s=>s.startsWith(cookieName+'='));const key=match?hash(match.slice(cookieName.length+1)):'';const s=sessions.get(key);return s&&s.expires>Date.now()?{...s,key}:null;}
+  function session(req){const match=(req.headers.cookie||'').split(';').map(s=>s.trim()).find(s=>s.startsWith(cookieName+'='));const key=match?hash(match.slice(cookieName.length+1)):'';const s=sessions.get(key);return s&&s.expires>Date.now()&&db.users.some(u=>u.id===s.user&&hash(u.digest)===s.accountVersion)?{...s,key}:null;}
   function limit(req,kind,max){const key=kind+':'+req.socket.remoteAddress;let r=rates.get(key);if(!r||r.end<Date.now()){r={count:0,end:Date.now()+60000};rates.set(key,r);}return ++r.count<=max;}
   async function body(req){let size=0,parts=[];for await(const part of req){size+=part.length;if(size>131072)throw Object.assign(Error('请求过大'),{status:413});parts.push(part);}return JSON.parse(Buffer.concat(parts).toString()||'{}');}
   const send=(ws,value)=>{if(ws?.readyState!==1||ws.bufferedAmount>MAX)return false;ws.send(JSON.stringify(value));return true;};
@@ -29,8 +41,9 @@ export function createRelay({origin,allowedOrigins=[],dataFile,secureCookies=tru
   function forward(device,message){const host=hosts.get(device);if(!host||host.readyState!==1)return Promise.reject(Object.assign(Error('电脑离线，请打开 Mydex'),{status:503}));return new Promise((resolve,reject)=>{const id=random();const timer=setTimeout(()=>{pending.delete(id);reject(Object.assign(Error('电脑响应超时；发送结果可能尚未确认'),{status:504}));},55000);pending.set(id,{device,resolve,reject,timer});if(!send(host,{...message,id})){clearTimeout(timer);pending.delete(id);reject(Error('电脑连接繁忙'));}});}
   function signIn(req,res,user){
         const previous=session(req);if(previous){sessions.delete(previous.key);for(const[id,c]of channels)if(c.session===previous.key)closeChannel(id);}
-        const token=random();sessions.set(hash(token),{user:user.id,expires:Date.now()+7*86400000});
-        res.setHeader('Set-Cookie',`${cookieName}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800${secureCookies?'; Secure':''}`);
+        const token=random();sessions.set(hash(token),{user:user.id,expires:Date.now()+sessionDays*86400000,accountVersion:hash(user.digest)});
+        saveSessions();
+        res.setHeader('Set-Cookie',`${cookieName}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${sessionDays*86400}${secureCookies?'; Secure':''}`);
         return json(res,200,{ok:true});
   }
   const server=http.createServer(async(req,res)=>{
@@ -52,8 +65,12 @@ export function createRelay({origin,allowedOrigins=[],dataFile,secureCookies=tru
       // Browser mutations require the exact origin. Desktop pairing endpoints
       // instead require unpredictable request secrets, never cookies.
       const desktop=['/relay/pair/start','/relay/pair/poll'].includes(u.pathname);
-      if(req.method!=='GET'&&!desktop&&!acceptedOrigins.has(req.headers.origin))return json(res,403,{error:'网页来源不匹配'});
-      if(req.method==='GET'&&u.pathname==='/relay/auth/config')return json(res,200,{emailRegistration:!!deliver,emailCodeLogin:!!deliver});
+      if(req.method!=='GET'&&!desktop&&!verifiedBrowser(req))return json(res,403,{error:'网页来源不匹配'});
+      if(req.method==='GET'&&u.pathname==='/relay/auth/config'){
+        let csrfToken=readCookie(req,csrfCookie);if(!/^[A-Za-z0-9_-]{43}$/.test(csrfToken))csrfToken=random();
+        res.setHeader('Set-Cookie',`${csrfCookie}=${csrfToken}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000${secureCookies?'; Secure':''}`);
+        return json(res,200,{emailRegistration:!!deliver,emailCodeLogin:!!deliver,csrfToken});
+      }
       if(req.method==='POST'&&['/relay/register/code','/relay/register','/relay/login/code','/relay/login/verify'].includes(u.pathname)){
         if(!deliver)return json(res,503,{error:'邮箱注册暂未就绪，请稍后再试'});
         if(!limit(req,'registration',20))return json(res,429,{error:'尝试过多，请稍后再试'});
@@ -123,11 +140,12 @@ export function createRelay({origin,allowedOrigins=[],dataFile,secureCookies=tru
         db.users=db.users.filter(x=>x.id!==s.user);db.devices=db.devices.filter(d=>d.owner!==s.user);save();
         for(const id of ids)hosts.get(id)?.close(1008,'revoked');
         for(const[key,value]of sessions)if(value.user===s.user)sessions.delete(key);
+        saveSessions();
         for(const[id,c]of channels)if(ids.has(c.device))closeChannel(id);
         return json(res,200,{ok:true});
       }
       if(req.method==='POST'&&u.pathname==='/relay/logout'){
-        sessions.delete(s.key);for(const[id,c]of channels)if(c.session===s.key)closeChannel(id);
+        sessions.delete(s.key);saveSessions();for(const[id,c]of channels)if(c.session===s.key)closeChannel(id);
         res.setHeader('Set-Cookie',`${cookieName}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secureCookies?'; Secure':''}`);return json(res,200,{ok:true});
       }
       if(req.method==='POST'&&u.pathname==='/relay/pair/inspect'){

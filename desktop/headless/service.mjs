@@ -1,8 +1,9 @@
 import fs from 'node:fs';import path from 'node:path';import crypto from 'node:crypto';
 import net from 'node:net';
-import {processOwnsLock} from '../../gateway/process-lock.mjs';
 import {BridgeOwner} from './bridge-owner.mjs';
 import {createControlServer} from './control-server.mjs';
+import {routerRequest} from './router-client.mjs';
+import {processOwnsLock} from '../../gateway/router/process-lock.mjs';
 import {appRoot,dataRoot,controlRoot,protect,writePrivate} from './local-state.mjs';
 protect(controlRoot);
 const profilePath=path.join(dataRoot,'desktop-profile.json');
@@ -22,16 +23,23 @@ try{const fd=fs.openSync(lock,'wx');fs.writeFileSync(fd,String(process.pid));fs.
 }
 const owner=new BridgeOwner({script:path.join(appRoot,'desktop/gui-bridge.mjs'),env:{...process.env,MYDEX_DATA_DIR:dataRoot,MYDEX_HEADLESS:'1'}});
 const token=crypto.randomBytes(48).toString('base64url');
+const desktopToken=crypto.randomBytes(48).toString('base64url');
 const packageVersion=JSON.parse(fs.readFileSync(path.join(appRoot,'desktop/headless/package.json'),'utf8')).version;
-const server=createControlServer({owner,token,onShutdown:()=>void shutdown(),pairingDirectory:controlRoot,agentVersion:packageVersion});
+const server=createControlServer({owner,token,desktopToken,onShutdown:()=>void shutdown(),pairingDirectory:controlRoot,agentVersion:packageVersion,routerRequest:(operation,args,requestId)=>routerRequest(configPath,operation,args,requestId)});
 let closing=false,busy=false,timer;
-async function shutdown(){if(closing)return;closing=true;clearInterval(timer);server.closeAllConnections();server.close();await owner.close();for(const file of ['endpoint.json','service.lock'])try{fs.unlinkSync(path.join(controlRoot,file));}catch{}process.exit(0);}
+async function shutdown(code=0){if(closing)return;closing=true;clearInterval(timer);server.closeAllConnections();server.close();await owner.close();for(const file of ['endpoint.json','desktop-endpoint.json','service.lock'])try{fs.unlinkSync(path.join(controlRoot,file));}catch{}process.exit(typeof code==='number'?code:0);}
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);
+try{
 await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve)});
 const first=await owner.call('status');
 // Refuse to create a second owner for an existing gateway. Existing EXE must
 // hand over explicitly, or use an isolated profile for installation testing.
 if(first.connected){await shutdown();}else if(first.configured)await owner.call('start');
 writePrivate(path.join(controlRoot,'endpoint.json'),{pid:process.pid,port:server.address().port,token});
+writePrivate(path.join(controlRoot,'desktop-endpoint.json'),{protocol:1,pid:process.pid,port:server.address().port,token:desktopToken,configPath:path.resolve(configPath)});
+}catch{
+ console.error('Mydex service initialization failed; closing owner and clearing descriptors.');
+ await shutdown(1);
+}
 timer=setInterval(async()=>{if(busy||closing)return;busy=true;try{if(owner.closed){await shutdown();return;}await owner.call('status');}catch{}finally{busy=false;}},5000);
 console.log('Mydex independent service ready');
