@@ -13,14 +13,19 @@ class P2pTransport {
   final Future<Map<String, dynamic>> Function(String) _signal;
   RTCPeerConnection? _peer;
   bool _ready = false;
-  bool _starting = false;
+  Future<void>? _warming;
   bool _disposed = false;
   bool get isReady => _ready && !_disposed;
   DateTime _retryAfter = DateTime.fromMillisecondsSinceEpoch(0);
 
-  Future<void> warm() async {
-    if (_disposed || _ready || _starting || DateTime.now().isBefore(_retryAfter)) return;
-    _starting = true;
+  Future<void> warm() {
+    if (_disposed || _ready || DateTime.now().isBefore(_retryAfter)) {
+      return Future<void>.value();
+    }
+    return _warming ??= _warm().whenComplete(() => _warming = null);
+  }
+
+  Future<void> _warm() async {
     RTCPeerConnection? created;
     try {
       await _peer?.dispose();
@@ -62,8 +67,6 @@ class P2pTransport {
       try { await created?.dispose(); } catch (_) {}
       _ready = false;
       _retryAfter = DateTime.now().add(const Duration(minutes: 1));
-    } finally {
-      _starting = false;
     }
   }
 

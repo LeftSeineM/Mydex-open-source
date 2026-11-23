@@ -17,19 +17,19 @@ class GatewayApi {
   Future<void>? _networkReady;
   TunnelProxy? _tunnel;
   String? get connectionRoute => _tunnel?.lastRoute;
+
+  bool get _p2pEnabled =>
+      const bool.fromEnvironment('MYDEX_P2P_TEST') &&
+      Platform.isAndroid &&
+      settings.token.isNotEmpty;
+
   Future<bool> startP2pTesting() async {
-    if (!const bool.fromEnvironment('MYDEX_P2P_TEST') ||
-        !Platform.isAndroid ||
-        settings.token.isEmpty) {
-      return false;
-    }
+    if (!_p2pEnabled) return false;
     await prepareNetwork();
-    final tunnel = _tunnel;
-    if (tunnel == null) return false;
-    tunnel.p2p ??= P2pTransport(
-        (sdp) => post('/api/private/p2p/answer', {'sdp': sdp}));
-    await tunnel.p2p!.warm();
-    return tunnel.p2p!.isReady;
+    final transport = _tunnel?.p2p;
+    if (transport == null) return false;
+    await transport.warm();
+    return transport.isReady;
   }
   Future<void> prepareNetwork() => _networkReady ??= _prepareNetwork();
   Future<void> _prepareNetwork() async {
@@ -47,6 +47,13 @@ class GatewayApi {
       try {
         final endpoint = await tunnel.start();
         configureMeshProxy(client, endpoint, tunnel.password);
+        if (_p2pEnabled) {
+          // The proxy attempts P2P in the background while the first request
+          // can still use LAN or the existing encrypted relay.
+          tunnel.p2p = P2pTransport(
+            (sdp) => post('/api/private/p2p/answer', {'sdp': sdp}),
+          );
+        }
       } catch (_) {
         tunnel.close();
         _networkReady = null;

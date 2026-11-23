@@ -44,10 +44,11 @@ class TunnelProxy {
     ({String host, int port})? direct;
     // Mobile data has no LAN peer: discovery must not delay the relay path.
     // Every discovered endpoint is pinned by discovery AND the inner TLS client.
-    unawaited(
+    final discovery =
         discoverComputer(fingerprint, candidates: directUrls).then((value) {
       if (!_closed) direct = value;
-    }).catchError((_) {}));
+      return value;
+    }).catchError((_) => null);
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     if (_closed) {
       await server.close(force: true);
@@ -65,47 +66,53 @@ class TunnelProxy {
       }
       WebSocket? ws;
       Socket? socket;
-      final endpointDirect = direct;
-      if (endpointDirect != null) {
+      Future<bool> connectDirect(({String host, int port}) endpoint) async {
         Socket? upstream;
         try {
-          upstream = await Socket.connect(
-              endpointDirect.host, endpointDirect.port,
+          upstream = await Socket.connect(endpoint.host, endpoint.port,
               timeout: const Duration(seconds: 2));
           if (_closed) {
             upstream.destroy();
-            throw ApiException('连接已关闭');
+            return false;
           }
-          socket = await req.response.detachSocket(writeHeaders: false);
-          _sockets.addAll([socket, upstream]);
-          socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+          final local = await req.response.detachSocket(writeHeaders: false);
+          final remote = upstream;
+          _sockets.addAll([local, remote]);
+          local.write('HTTP/1.1 200 Connection Established\r\n\r\n');
           lastRoute = '局域网直连';
-          final a = socket, b = upstream;
           void end() {
-            _sockets.remove(a);
-            _sockets.remove(b);
-            a.destroy();
-            b.destroy();
+            _sockets.remove(local);
+            _sockets.remove(remote);
+            local.destroy();
+            remote.destroy();
           }
 
-          a.listen(b.add, onError: (_) => end(), onDone: end);
-          b.listen(a.add, onError: (_) => end(), onDone: end);
-          return;
+          local.listen(remote.add, onError: (_) => end(), onDone: end);
+          remote.listen(local.add, onError: (_) => end(), onDone: end);
+          return true;
         } catch (_) {
           upstream?.destroy();
+          return false;
         }
       }
+
+      final endpointDirect = direct;
+      if (endpointDirect != null && await connectDirect(endpointDirect)) return;
       final directStream = await p2p?.open();
       if (directStream != null) {
         try {
           if (_closed) throw StateError('Tunnel closed');
-          final channelSocket = await req.response.detachSocket(writeHeaders: false);
+          final channelSocket =
+              await req.response.detachSocket(writeHeaders: false);
           _sockets.add(channelSocket);
           channelSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
           lastRoute = 'P2P 直连';
-          directStream.attach(channelSocket, () => _sockets.remove(channelSocket));
+          directStream.attach(
+              channelSocket, () => _sockets.remove(channelSocket));
           return;
-        } catch (_) { directStream.close(); }
+        } catch (_) {
+          directStream.close();
+        }
       }
       unawaited(p2p?.warm());
       final ready = Completer<void>();
@@ -156,15 +163,18 @@ class TunnelProxy {
         socket.listen((data) => ws?.add(data),
             onError: (_) => cleanup(), onDone: cleanup);
       } catch (_) {
-        // Before detach, fail the CONNECT; never fall back to an unpinned host.
+        if (!ready.isCompleted) ready.complete();
+        cleanup();
+        // A fast relay failure can precede the pinned LAN probe. Wait for it
+        // only before CONNECT succeeds, so no application request is replayed.
+        if (socket != null || _closed) return;
+        final fallback = direct ?? await discovery;
+        if (_closed) return;
+        if (fallback != null && await connectDirect(fallback)) return;
         try {
           req.response.statusCode = 502;
           await req.response.close();
         } catch (_) {}
-        if (!ready.isCompleted) {
-          ready.complete();
-        }
-        cleanup();
       }
     });
     return '127.0.0.1:${server.port}';
