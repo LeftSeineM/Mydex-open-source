@@ -1,7 +1,7 @@
 param([Parameter(Mandatory=$true)][string]$NodeExe,[string]$Makensis)
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
-$out=Join-Path $root 'build/desktop-v0426'
+$out=Join-Path $root 'build/desktop-v0427'
 $node=(Resolve-Path -LiteralPath $NodeExe).Path
 $compiler=Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
 if(!(Test-Path $compiler)){throw 'Install the Windows .NET Framework compiler first'}

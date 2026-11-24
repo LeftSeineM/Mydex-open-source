@@ -1,7 +1,7 @@
 ﻿Unicode true
 !include "MUI2.nsh"
 Name "Mydex"
-OutFile "..\dist\Mydex-0.4.26-Setup.exe"
+OutFile "..\dist\Mydex-0.4.27-Setup.exe"
 InstallDir "D:\Software\MydexMobileApp"
 InstallDirRegKey HKCU "Software\MydexMobileConnector" "InstallDir"
 RequestExecutionLevel user
@@ -21,13 +21,13 @@ UninstallIcon "Mydex.ico"
 Section "Mydex"
  SetOutPath "$INSTDIR"
  SetOverwrite ifdiff
- File /r /x data /x qa /x qa-private /x OffscreenQA.exe /x qa-error.txt "..\build\desktop-v0426\*"
+ File /r /x data /x qa /x qa-private /x OffscreenQA.exe /x qa-error.txt "..\build\desktop-v0427\*"
  WriteRegStr HKCU "Software\MydexMobileConnector" "InstallDir" "$INSTDIR"
  CreateDirectory "$SMPROGRAMS\Mydex 电脑连接"
  CreateShortcut "$SMPROGRAMS\Mydex 电脑连接\Mydex.lnk" "$INSTDIR\Mydex.exe"
  WriteUninstaller "$INSTDIR\Uninstall.exe"
  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MydexMobileConnector" "DisplayName" "Mydex 电脑连接"
- WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MydexMobileConnector" "DisplayVersion" "0.4.26"
+ WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MydexMobileConnector" "DisplayVersion" "0.4.27"
  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MydexMobileConnector" "UninstallString" '"$INSTDIR\Uninstall.exe"'
  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MydexMobileConnector" "DisplayIcon" "$INSTDIR\Mydex.exe"
 SectionEnd

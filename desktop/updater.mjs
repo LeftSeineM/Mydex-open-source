@@ -4,9 +4,9 @@ import crypto from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {setGlobalProxyFromEnv} from 'node:http';
-export const desktopVersion='0.4.26';
-export const updateOrigin='https://app.leftseinem.dpdns.org';
-export const legacyUpdateOrigin='https://app.leftseinem.com';
+export const desktopVersion='0.4.27';
+export const updateOrigin='https://app.leftseinem.com';
+export const legacyUpdateOrigin='https://app.leftseinem.dpdns.org';
 const publicKey=`-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAhbTNjX6AGrlT5tlbCNaLVK7eD/RJzi8PxZGZeYxv/FA=
 -----END PUBLIC KEY-----`;
