@@ -11,6 +11,7 @@ async function fixture(t,{fail=false}={}){
  const headless=path.join(root,'desktop/headless'),data=path.join(root,'data');
  fs.mkdirSync(headless,{recursive:true});fs.mkdirSync(data);
  for(const name of ['service.mjs','bridge-owner.mjs','control-server.mjs','router-client.mjs','local-state.mjs'])fs.copyFileSync(path.join(source,name),path.join(headless,name));
+ fs.cpSync(path.join(source,'workers'),path.join(headless,'workers'),{recursive:true});
  fs.mkdirSync(path.join(root,'gateway/router'),{recursive:true});
  fs.copyFileSync(fileURLToPath(new URL('../../../gateway/router/access.mjs',import.meta.url)),path.join(root,'gateway/router/access.mjs'));
  fs.copyFileSync(fileURLToPath(new URL('../../../gateway/router/process-lock.mjs',import.meta.url)),path.join(root,'gateway/router/process-lock.mjs'));

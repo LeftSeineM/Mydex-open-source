@@ -1,0 +1,24 @@
+{
+  "name": "mydex-router",
+  "displayName": "Mydex Router",
+  "version": "0.1.0",
+  "description": "让当前会话成为 Mydex Router：分档派出后台 GLM Worker、用简报和回执交接、抽测验收；通过 Mydex Agent 连接手机和原有桌面会话。需要先安装 Mydex Agent（superagent 私测版，含 Worker 引擎）。",
+  "author": {"name": "Mydex"},
+  "license": "MIT",
+  "keywords": ["mydex", "router", "multi-agent"],
+  "userConfig": {
+    "agent_host": {
+      "type": "file",
+      "title": "Mydex Agent 程序",
+      "description": "Mydex Agent 安装目录里的 Mydex-AgentHost.exe（Linux/macOS 为 mydex-agent）",
+      "default": "D:/Software/MydexAgent/Mydex-AgentHost.exe",
+      "required": true
+    }
+  },
+  "mcpServers": {
+    "mydex": {
+      "command": "${user_config.agent_host}",
+      "args": ["--mcp"]
+    }
+  }
+}

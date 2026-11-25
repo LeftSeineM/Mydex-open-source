@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang=zh-CN>
+<head>
+<meta charset=utf-8>
+<meta name=viewport content='width=device-width,initial-scale=1'>
+<title>Mydex Router 工作台</title>
+<style>
+
+:root{--bg:#f3f5f7;--paper:#fff;--ink:#1f2a33;--muted:#5f6d79;--line:#e1e6eb;--blue:#355e79;--soft:#e9f0f5;--green:#2f715a;--greensoft:#e7f2ec;--warn:#8a5a12;--warnsoft:#fbf2e2;--violet:#4a3f8c;--violetsoft:#f0edf8}
+*{box-sizing:border-box}
+body{margin:0;height:100vh;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font:14px/1.65 'Segoe UI','Microsoft YaHei',system-ui,sans-serif}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.muted{color:var(--muted)}
+.top{display:flex;justify-content:space-between;align-items:center;gap:24px;padding:14px 24px;background:var(--paper);border-bottom:1px solid var(--line)}
+h1{margin:0;font-size:20px;font-weight:650}
+.top>div>p{margin:2px 0 0;font-size:13px;color:var(--muted)}
+.budget{width:340px}
+.bline{display:flex;justify-content:space-between;font-weight:600}
+.bar{height:6px;background:var(--soft);border-radius:3px;margin:6px 0}
+.bar i{display:block;height:100%;width:17%;background:var(--blue);border-radius:3px}
+.budget p{margin:0;font-size:12px}
+main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(340px,430px) 1fr}
+.chat{display:flex;flex-direction:column;min-height:0;background:var(--paper);border-right:1px solid var(--line)}
+.msgs{flex:1;overflow:auto;padding:20px}
+.m{margin:0 0 18px;max-width:62ch}
+.m.u{margin-left:auto;width:fit-content;background:var(--soft);padding:10px 14px;border-radius:14px 14px 4px 14px}
+.who{font-size:12px;color:var(--muted);margin-bottom:4px}
+.tag{border:1px solid var(--line);border-radius:6px;padding:0 6px;margin-left:6px}
+.chip{border:1px solid var(--line);background:var(--paper);border-radius:999px;padding:2px 10px;font-size:12px;color:var(--blue);cursor:pointer;margin:6px 6px 0 0}
+.chip:hover{border-color:var(--blue)}
+.log{margin-top:8px}
+.log summary{cursor:pointer;font-size:12px;color:var(--muted)}
+.log p{font-size:12px;color:var(--muted);margin:6px 0 0}
+.pending{padding:0 16px}
+.decide{border:1px solid #ecd9b4;background:var(--warnsoft);border-radius:12px;padding:12px 14px;margin-bottom:12px}
+.decide h3{margin:0 0 2px;font-size:14px;color:var(--warn)}
+.decide p{margin:0}
+.row{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.btn{min-height:36px;padding:6px 14px;border:1px solid var(--line);border-radius:8px;background:var(--paper);cursor:pointer}
+.btn.pri{background:var(--blue);border-color:var(--blue);color:#fff}
+.composer{border-top:1px solid var(--line);padding:10px 16px 12px}
+.scope{min-height:26px;font-size:12px;color:var(--muted)}
+.scope .chip{margin-top:0;margin-left:6px}
+textarea{width:100%;height:64px;resize:none;border:1px solid var(--line);border-radius:10px;padding:10px;font:inherit}
+.send{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:8px;font-size:12px;color:var(--muted)}
+.work{overflow:auto;padding:20px 24px;min-height:0}
+h2{margin:0 0 6px;font-size:15px}
+.why{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin-bottom:16px}
+.why p{margin:0;max-width:72ch}
+.why ol{margin:10px 0 0;padding-left:22px;color:var(--muted);max-width:72ch}
+.why li{margin:4px 0}
+.link{background:none;border:0;padding:6px 0 0;color:var(--blue);font-size:13px;cursor:pointer}
+.split{display:grid;grid-template-columns:1fr;gap:16px}
+.panel{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.thead{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+.legend{display:flex;gap:12px;font-size:12px;color:var(--muted)}
+.legend span::before{content:'';display:inline-block;width:8px;height:8px;margin-right:5px;border-radius:2px;background:var(--c)}
+.treebox{display:flex;overflow-x:auto;padding:12px 0 6px}
+.tree{margin:0 auto;padding:0;display:flex;justify-content:center}
+.tree ul{position:relative;display:flex;justify-content:center;margin:0;padding:22px 0 0}
+.tree li{position:relative;list-style:none;display:flex;flex-direction:column;align-items:center;padding:22px 8px 0}
+.tree>li{padding-top:0}
+.tree ul::before{content:'';position:absolute;top:0;left:50%;height:22px;border-left:1.5px solid #b8c5d0}
+.tree ul>li::before,.tree ul>li::after{content:'';position:absolute;top:0;width:50%;height:22px;border-top:1.5px solid #b8c5d0}
+.tree ul>li::before{right:50%}
+.tree ul>li::after{left:50%;border-left:1.5px solid #b8c5d0}
+.tree ul>li:first-child::before,.tree ul>li:last-child::after{border-top:0}
+.tree ul>li:first-child::after{border-radius:8px 0 0 0}
+.tree ul>li:last-child::after{border-top:0}
+.tree ul>li:last-child::before{border-right:1.5px solid #b8c5d0;border-radius:0 8px 0 0}
+.tree ul>li:only-child::before{display:none}
+.tree ul>li:only-child::after{border-radius:0;width:0;left:50%}
+.node{display:grid;grid-template-columns:1fr;gap:2px;width:176px;margin:0;padding:9px 12px;text-align:left;background:var(--paper);border:1px solid var(--line);border-left:4px solid var(--c);border-radius:10px;cursor:pointer}
+.node:hover{border-color:#c4cfd9;border-left-color:var(--c)}
+.node.on{background:var(--soft);border-color:var(--blue);border-left-color:var(--c)}
+.node.root{cursor:default;background:#f7f9fa;width:240px;text-align:center}
+.node.root .st{justify-self:center}
+.node b{font-weight:600}
+.meta,.cost{font-size:12px;color:var(--muted)}
+.cost{text-align:left}
+.hand{grid-column:1/-1;font-size:12px;color:var(--violet)}
+.t-brain{--c:#23303a}.t-strong{--c:#4a3f8c}.t-mid{--c:#355e79}.t-light{--c:#9aacba}
+.st{justify-self:start;white-space:nowrap;font-size:12px;padding:1px 8px;border-radius:999px;background:var(--soft);color:var(--blue)}
+.s-done{background:var(--greensoft);color:var(--green)}
+.s-wait{background:var(--warnsoft);color:var(--warn)}
+.s-review{background:var(--violetsoft);color:var(--violet)}
+.s-sent{background:var(--warnsoft);color:var(--warn);outline:1px dashed #d4b06e}
+.treebox{position:relative}
+.tree{position:relative;z-index:1}
+.tree ul::before,.tree ul>li::before,.tree ul>li::after{border-color:transparent!important}
+.wires{position:absolute;left:0;top:0;pointer-events:none;overflow:visible}
+.wire{fill:none;stroke:#b8c5d0;stroke-linejoin:round}
+.wire.plan{stroke-dasharray:5 5}
+.wire.hot{stroke:#355e79}
+.pk{stroke:#fff;stroke-width:1.5}
+.pk.down{fill:#355e79}.pk.up{fill:#2f715a}.pk.go{fill:#c08a2e}
+.node.n-run{animation:breathe 2.6s ease-in-out infinite}
+.node.n-wait,.node.n-sent{box-shadow:0 0 0 4px rgba(192,138,46,.18)}
+@keyframes breathe{50%{box-shadow:0 0 0 6px rgba(53,94,121,.13)}}
+@media (prefers-reduced-motion:reduce){.node.n-run{animation:none}}
+.flowkey{margin:6px 0 0;font-size:12px;color:var(--muted)}
+.detail{position:static}
+.tabs{display:flex;flex-wrap:wrap;gap:2px;margin:10px 0 12px;border-bottom:1px solid var(--line)}
+.tab{background:none;border:0;border-bottom:2px solid transparent;padding:8px 10px;color:var(--muted);cursor:pointer}
+.tab.on{color:var(--ink);border-bottom-color:var(--blue)}
+dl{margin:0}
+dt{margin-top:10px;font-size:12px;color:var(--muted)}
+dd{margin:2px 0 0}
+.files{padding-left:18px}
+.files li{font-family:Consolas,'Microsoft YaHei',monospace;font-size:12.5px;margin:4px 0}
+@media (max-width:1180px){.split{grid-template-columns:1fr}.detail{position:static}}
+@media (max-width:860px){body{height:auto}main{grid-template-columns:1fr}.chat{height:85vh;border-right:0;border-bottom:1px solid var(--line)}.top{flex-wrap:wrap}.budget{width:100%}}
+
+.feed{flex:1;overflow:auto;padding:16px 20px}
+.ev{margin:0 0 14px;max-width:62ch}
+.ev time{display:block;font-size:12px;color:var(--muted)}
+.ev.bad{color:#8a2d1f}
+.empty{padding:28px 4px;color:var(--muted);max-width:52ch}
+.s-fail{background:#f8e9e6;color:#8a2d1f}
+.s-reject{background:#f8e9e6;color:#8a2d1f;outline:1px dashed #d99b8f}
+.node.n-fail{border-left-color:#b54a35}
+.doc{white-space:pre-wrap;font:13px/1.7 'Segoe UI','Microsoft YaHei',sans-serif;background:#f7f9fa;border:1px solid var(--line);border-radius:8px;padding:12px 14px;max-height:520px;overflow:auto;margin:0}
+.note{font-size:12px;color:var(--muted);margin:8px 0 0}
+.live{display:inline-block;width:8px;height:8px;border-radius:50%;background:#2f715a;margin-right:6px}
+.live.off{background:#b54a35}
+</style>
+</head>
+<body>
+<header class=top>
+ <div><h1>Mydex Router 工作台</h1><p id=sub>正在读取任务…</p></div>
+ <div class=budget>
+  <div class=bline><span id=spent>已花 ¥0</span><span class=muted id=cap></span></div>
+  <div class=bar><i id=barfill style='width:0'></i></div>
+  <p class=muted id=compare></p>
+ </div>
+</header>
+<main>
+<section class=chat aria-label='Router 派单记录'>
+ <div class=feed id=feed></div>
+ <div class=composer><div class=send><span><span class=live id=live></span><span id=liveText>每 3 秒刷新。和 Router 对话请回到 Claude Code。</span></span></div></div>
+</section>
+<section class=work>
+ <div class=split>
+  <div class=panel>
+   <div class=thead><h2>任务树</h2><div class=legend><span style='--c:#4a3f8c'>强档</span><span style='--c:#355e79'>中档</span><span style='--c:#9aacba'>轻档</span></div></div>
+   <p class=flowkey>蓝点往下表示 Worker 正在干活，绿点往上表示回执已交回、等 Router 抽测。线越粗，这一枝花得越多。</p>
+   <div class=treebox id=tbox><svg class=wires id=wires aria-hidden=true></svg><ul class=tree id=tree></ul></div>
+  </div>
+  <aside class='panel detail' id=detail aria-live=polite><p class=muted>点任务树上的节点，查看简报、回执和派给它的理由。</p></aside>
+ </div>
+</section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const yuan=n=>'¥'+(n||0).toFixed(n>=1?2:4);
+let S=null,sel=null,tab='brief',lastKey='',detailKey='';
+const TIERCLS={strong:'t-strong',mid:'t-mid',light:'t-light'};
+function st(j){
+ if(j.state==='queued')return['sent','排队中'];
+ if(j.state==='running')return['run','在跑'];
+ if(j.state==='done'&&!j.review)return['review','交回待抽测'];
+ if(j.state==='done'&&j.review.passed)return['done','已验收'];
+ if(j.state==='done')return['reject','验收未通过'];
+ return['fail',{failed:'失败',lost:'结果未知',cancelled:'已取消'}[j.state]||j.state];
+}
+const tierLabel=j=>S.tiers[j.tier]?.label||'自定义';
+function li(j){
+ const ks=S.jobs.filter(k=>k.parent===j.id),[c,t]=st(j);
+ return `<li><button class='node ${TIERCLS[j.tier]||'t-mid'} n-${c}${sel===j.id?' on':''}' data-node='${esc(j.id)}'><b>${esc(j.title)}</b><span class='st s-${c}'>${t}</span><span class=meta>${esc(j.model)}，${tierLabel(j)}</span><span class=cost>${yuan(j.costCny)}</span></button>${ks.length?`<ul>${ks.map(li).join('')}</ul>`:''}</li>`;
+}
+function tree(){
+ const roots=S.jobs.filter(j=>!j.parent||!S.jobs.some(k=>k.id===j.parent));
+ $('tree').innerHTML=`<li><div class='node t-brain root' id=rootnode><b>Router</b><span class=st>大脑</span><span class=meta>Claude Code 会话，负责拆分、写简报、抽测验收</span><span class=cost></span></div>${roots.length?`<ul>${roots.map(li).join('')}</ul>`:''}</li>`;
+ wires();
+}
+const NS='http://www.w3.org/2000/svg',reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+function wires(){
+ const box=$('tbox'),svg=$('wires');svg.setAttribute('width',0);svg.setAttribute('height',0);const b=box.getBoundingClientRect();
+ svg.setAttribute('width',box.scrollWidth);svg.setAttribute('height',box.scrollHeight);svg.innerHTML='';
+ if(!S)return;
+ const by=Object.fromEntries(S.jobs.map(j=>[j.id,j])),hot=new Set();for(let k=by[sel];k;k=by[k.parent])hot.add(k.id);
+ const at=el=>{const r=el.getBoundingClientRect();return{l:r.left-b.left+box.scrollLeft,t:r.top-b.top+box.scrollTop,w:r.width,h:r.height}};
+ for(const j of S.jobs){
+  const pe=j.parent&&by[j.parent]?document.querySelector(`.node[data-node="${j.parent}"]`):$('rootnode'),ce=document.querySelector(`.node[data-node="${j.id}"]`);if(!pe||!ce)continue;
+  const p=at(pe),c=at(ce),px=p.l+p.w/2,py=p.t+p.h,cx=c.l+c.w/2,cy=c.t,my=py+(cy-py)/2,d=`M${px} ${py} V${my} H${cx} V${cy}`;
+  const path=document.createElementNS(NS,'path');path.setAttribute('d',d);path.setAttribute('class','wire'+(hot.has(j.id)?' hot':''));
+  path.style.strokeWidth=(1.5+Math.min(5,Math.sqrt((j.costCny||0)*20)*1.5)).toFixed(1);svg.append(path);
+  const [c2]=st(j),kind={run:'down',sent:'down',review:'up'}[c2];if(!kind||reduce)continue;
+  for(let i=0;i<2;i++){
+   const dot=document.createElementNS(NS,'circle');dot.setAttribute('r',4.5);dot.setAttribute('class','pk '+kind);
+   const mv=document.createElementNS(NS,'animateMotion');mv.setAttribute('path',d);mv.setAttribute('dur','2.6s');mv.setAttribute('begin',(i*1.3)+'s');mv.setAttribute('repeatCount','indefinite');
+   if(kind==='up'){mv.setAttribute('keyPoints','1;0');mv.setAttribute('keyTimes','0;1');mv.setAttribute('calcMode','linear')}
+   dot.append(mv);svg.append(dot);
+  }
+ }
+}
+function feed(){
+ const by=Object.fromEntries(S.jobs.map(j=>[j.id,j])),name=id=>`「${esc(by[id]?.title||id)}」`;
+ const rows=S.ledger.filter(e=>e.event!=='started').map(e=>{
+  const time=`<time>${new Date(e.at).toLocaleString('zh-CN',{hour12:false})}</time>`;
+  if(e.event==='dispatched')return`<div class=ev>${time}派出${name(e.id)}，交给${esc(S.tiers[e.tier]?.label||'自定义档')} ${esc(e.model)}。理由：${esc(e.why)}</div>`;
+  if(e.event==='done')return`<div class=ev>${time}${name(e.id)}交回回执，花费 ${yuan(e.costCny)}，等 Router 抽测。</div>`;
+  if(e.event==='accepted')return`<div class=ev>${time}Router 抽测${name(e.id)}通过：${esc(e.check)}</div>`;
+  if(e.event==='rejected')return`<div class='ev bad'>${time}Router 抽测${name(e.id)}未通过：${esc(e.check)}</div>`;
+  return`<div class='ev bad'>${time}${name(e.id)}${{failed:'失败',cancelled:'已取消',lost:'结果未知'}[e.event]||e.event}：${esc(e.error||'')}</div>`;
+ });
+ $('feed').innerHTML=rows.length?rows.reverse().join(''):`<div class=empty>还没有派出任何任务。在 Claude Code 里给 Router 一个需要拆分的任务，派出的子任务会出现在右边的任务树上。</div>`;
+}
+function header(){
+ const run=S.jobs.filter(j=>j.state==='running').length,wait=S.jobs.filter(j=>j.state==='done'&&!j.review).length;
+ $('sub').textContent=`${S.jobs.length} 个任务，${run} 个在跑，${wait} 个等抽测`;
+ $('spent').textContent='已花 '+yuan(S.spentCny);$('cap').textContent='预算 ¥'+S.limits.budgetCny;
+ $('barfill').style.width=Math.min(100,S.spentCny/S.limits.budgetCny*100).toFixed(1)+'%';
+ $('compare').textContent=S.allStrongCny?`同样的 token 若全按强档单价算，约 ${yuan(S.allStrongCny)}。单价是估算值，见 tiers.json。`:'';
+}
+async function detail(force){
+ const j=S?.jobs.find(x=>x.id===sel);if(!j)return;
+ const key=sel+tab+j.state+(j.review?.at||'');if(!force&&key===detailKey)return;detailKey=key;
+ const [c,t]=st(j),tabs=[['brief','简报'],['receipt','回执'],['why','为什么交给它'],['files','交接文件']];
+ let body='<p class=muted>读取中…</p>';
+ $('detail').innerHTML=`<h2>${esc(j.title)}</h2><div class=muted>${esc(j.provider)}/${esc(j.model)}，${tierLabel(j)}，${t}，${yuan(j.costCny)}</div><div class=tabs role=tablist>${tabs.map(([k,v])=>`<button class='tab${tab===k?' on':''}' role=tab aria-selected=${tab===k} data-tab=${k}>${v}</button>`).join('')}</div><div id=dbody>${body}</div>`;
+ if(tab==='why'){$('dbody').innerHTML=`<p>${esc(j.why)}</p>${j.review?`<p class=note>Router 抽测（${j.review.passed?'通过':'未通过'}）：${esc(j.review.check)}</p>`:''}`;return}
+ const d=await (await fetch('/api/job/'+encodeURIComponent(j.id))).json();
+ if(tab==='brief')body=`<pre class=doc>${esc(d.brief)}</pre>`;
+ if(tab==='receipt')body=d.receipt?`<pre class=doc>${esc(d.receipt)}</pre>${j.receiptFallback?'<p class=note>Worker 没写回执文件，这是它的最后一条回复。</p>':''}`:d.partial?`<p class=note>没有完成，以下是中途的输出。</p><pre class=doc>${esc(d.partial)}</pre>`:`<p class=muted>${j.error?esc(j.error):'还没交回。交回后 Router 会先抽测，再告诉你结论。'}</p>`;
+ if(tab==='files')body=`<ul class=files>${d.files.map(f=>`<li>${esc(f)}</li>`).join('')}</ul><p class=note>工作目录：${esc(j.workdir)}</p>`;
+ $('dbody').innerHTML=body;
+}
+async function poll(){
+ try{
+  const s=await (await fetch('/api/state',{cache:'no-store'})).json();S=s;
+  $('live').className='live';$('liveText').textContent='每 3 秒刷新。和 Router 对话请回到 Claude Code。';
+  const key=JSON.stringify([s.jobs.map(j=>[j.id,j.state,j.review?.passed,Math.round((j.costCny||0)*1e4)]),sel]);
+  if(key!==lastKey){lastKey=key;tree();detail()}
+  header();feed();
+ }catch{$('live').className='live off';$('liveText').textContent='连不上工作台服务，请确认 workers/workbench.mjs 还在运行。'}
+}
+document.addEventListener('click',e=>{
+ const t=e.target.closest('[data-node],[data-tab]');if(!t)return;
+ if(t.dataset.node){sel=t.dataset.node;tab='brief';lastKey='';poll();detail(true)}
+ else{tab=t.dataset.tab;detail(true)}
+});
+addEventListener('resize',wires);
+poll();setInterval(poll,3000);
+</script>
+</body>
+</html>

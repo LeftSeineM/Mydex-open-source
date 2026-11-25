@@ -8,7 +8,7 @@ export const actions=new Set(['status','defaults','configureHub','start','stop',
 // Separate local credential: adding desktop UI operations must not broaden
 // the Agent/MCP endpoint (in particular, credential export and raw patching).
 const desktopActions=new Set(['status','defaults','start','stop','bridgeDiagnostics','findClaude','findToolBridge','configureTool','restoreClaude','restoreToolBridge','installClaude','installToolBridge','launchClaudeCompatibility','pairing','meshPairing','tunnelPairing','pairingQr','meshPairingQr','tunnelPairingQr','relayPairing']);
-export function createControlServer({owner,token,desktopToken,onShutdown,pairingDirectory,agentVersion,routerRequest}){
+export function createControlServer({owner,token,desktopToken,onShutdown,pairingDirectory,agentVersion,routerRequest,workers}){
  if(typeof token!=='string'||token.length<32)throw Error('A strong local control token is required');
  if(desktopToken!==undefined&&(typeof desktopToken!=='string'||desktopToken.length<32||desktopToken===token))throw Error('A separate strong desktop token is required');
  const expected=Buffer.from('Bearer '+token);
@@ -32,10 +32,12 @@ export function createControlServer({owner,token,desktopToken,onShutdown,pairing
        if(m.action==='status')return reply(200,{result:{...result,owned:false,sharedOwner:true,agentVersion}});
        return reply(200,{result});
      }
-     if(!m||typeof m!=='object'||!(actions.has(m.action)||m.action==='shutdown'&&onShutdown||m.action==='pair'&&pairingDirectory||m.action==='router'&&routerRequest))return reply(400,{error:'Unsupported management operation'});
+     if(!m||typeof m!=='object'||!(actions.has(m.action)||m.action==='shutdown'&&onShutdown||m.action==='pair'&&pairingDirectory||m.action==='router'&&routerRequest||m.action==='workers'&&workers))return reply(400,{error:'Unsupported management operation'});
      if(m.args!==undefined&&(!m.args||typeof m.args!=='object'||Array.isArray(m.args)))return reply(400,{error:'Invalid arguments'});
      if(m.action==='shutdown'){reply(200,{result:{stopping:true}});setImmediate(onShutdown);return;}
      if(m.action==='router')return reply(200,{result:await routerRequest(m.args?.operation,m.args?.args,m.args?.requestId)});
+     // Router-owned background Workers: bounded by budget/concurrency, never touch native sessions.
+     if(m.action==='workers'){try{return reply(200,{result:await workers.call(m.args?.operation,m.args?.args||{})});}catch(error){return reply(error.status||400,{error:String(error.message).slice(0,500)});}}
      if(m.action==='bridgeInstall'){
        const {preflight}=await import('./bridge-preflight.mjs');
        const id=m.args?.tool;

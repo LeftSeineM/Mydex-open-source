@@ -1,0 +1,15 @@
+{
+  "_note": "Worker 档位表。用户可在 Mydex 数据目录 workers/tiers.json 修改；单价为人民币每百万 token 估算值，只用于台账和预算。provider/model 必须存在于 DeepSeek Harness 桌面版配置。",
+  "tiers": {
+    "strong": {"label": "强档", "provider": "zai-coding-cn", "model": "glm-5.4", "price": {"input": 4, "output": 16, "cacheRead": 0.8}},
+    "mid": {"label": "中档", "provider": "zai-coding-cn", "model": "glm-5.3", "price": {"input": 2, "output": 8, "cacheRead": 0.4}},
+    "light": {"label": "轻档", "provider": "zai-coding-cn", "model": "glm-5.3-flash", "price": {"input": 0.5, "output": 2, "cacheRead": 0.1}}
+  },
+  "limits": {
+    "budgetCny": 20,
+    "maxConcurrent": 4,
+    "jobTimeoutMinutes": 20,
+    "permissionMode": "danger-full-access"
+  },
+  "dsh": {}
+}

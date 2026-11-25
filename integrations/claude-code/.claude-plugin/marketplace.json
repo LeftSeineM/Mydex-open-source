@@ -1,0 +1,11 @@
+{
+  "name": "mydex",
+  "owner": {"name": "Mydex"},
+  "plugins": [
+    {
+      "name": "mydex-router",
+      "source": "./mydex-router",
+      "description": "让当前会话成为 Mydex Router：分档派出后台 GLM Worker、用简报和回执交接、抽测验收；通过 Mydex Agent 连接手机和原有桌面会话。"
+    }
+  ]
+}

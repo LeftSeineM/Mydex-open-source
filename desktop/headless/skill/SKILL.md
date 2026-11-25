@@ -21,6 +21,10 @@ organization and save_organization require the release containing the organizati
 
 Use the independent background service. A Coding host is only the management entrypoint; closing it must not stop phone connectivity. Keep the existing desktop EXE available.
 
+## Router-owned background Workers
+
+`mydex_worker_*` tools start Workers that the Router itself owns: DeepSeek Harness SDK runtimes using the user's configured models, mapped to strong/mid/light tiers in `<data>/workers/tiers.json`. They never touch original desktop sessions, so they need no phone grant; they run with full access (user choice) and are bounded by budget, concurrency and a per-job timeout. Original sessions still go through `mydex_router` and its phone grants. Handoff is file based: brief.md in, receipt.md out. A receipt is the Worker's claim: spot-check a key result and record it with `mydex_worker_accept`. Do not delegate deletion, pushes, system changes or paid external actions. For code changes give each Worker its own git worktree. The Claude Code plugin `mydex-router` carries the full Router rules.
+
 ## Installation
 
 Detect OS and CPU. Public releases use the signed https://app.leftseinem.com/agent/latest.json index and matching Windows x64, Linux x64/ARM64 or macOS Intel/Apple Silicon package. Private Router configurations must remain on their private channel. On Linux/macOS use `sh <package>/desktop/headless/install.sh <absolute-chosen-directory>`; install a systemd user service or logged-in LaunchAgent, then merge `<root>/mydex-mcp.json`. No sudo, console window or replacement Coding application. Linux requires a systemd user session; Mac requires the logged-in GUI user. The PowerShell instructions below apply only to Windows.

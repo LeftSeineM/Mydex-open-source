@@ -2,6 +2,7 @@ import '../widgets/interactions.dart';
 import '../widgets/spacing.dart';
 import 'package:flutter/material.dart';
 import 'router_workspace.dart';
+import 'worker_tree.dart';
 import 'package:flutter/services.dart';
 import '../controller.dart';
 import '../models.dart';
@@ -181,6 +182,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                   MaterialPageRoute(
                                       builder: (_) =>
                                           RouterWorkspacePage(controller: c)))),
+                        if (AppController.superagentTest)
+                          IconButton(
+                              tooltip: 'Worker 任务树',
+                              icon: const Icon(Icons.hub_outlined, size: 20),
+                              onPressed: () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                      builder: (_) =>
+                                          WorkerTreePage(controller: c)))),
                         IconButton(
                             tooltip: '新对话',
                             icon: const Icon(Icons.edit_square, size: 20),

@@ -7,6 +7,7 @@ import {openPairing} from './open-pairing.mjs';
 import {latestRelease} from './releases.mjs';
 import {lifecycle,operation} from './lifecycle.mjs';
 import {registerRouterTools} from './router-mcp.mjs';
+import {registerWorkerTools} from './workers/mcp-tools.mjs';
 import {execFile} from 'node:child_process';import {promisify} from 'node:util';
 const server=new McpServer({name:'mydex',version:JSON.parse(fs.readFileSync(new URL('./package.json',import.meta.url),'utf8')).version});
 const reply=value=>({content:[{type:'text',text:JSON.stringify(value)}]});
@@ -29,5 +30,6 @@ tool('mydex_operation','Check the actual completion result of an installation or
 tool('mydex_uninstall','Remove this Agent installation and startup task, preserving user configuration and application bridge backups. This MCP session will close; read the returned receipt after completion.',{},async()=>{const result=await lifecycle('uninstall');setTimeout(()=>process.exit(0),1500);return result;});
 tool('mydex_check_update','Read signed public OS/CPU update index. Private Router installations must stay on their private update channel.',{},latestRelease);
 registerRouterTools(server);
+registerWorkerTools(server);
 await server.connect(new StdioServerTransport());
 // Closing this MCP transport does not own or stop the independent service.

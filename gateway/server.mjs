@@ -14,6 +14,7 @@ import {GatewayRouterAdapter} from './router/gateway-adapter.mjs';
 import {coordinatorToken} from './router/access.mjs';
 import {ResourceQueries} from './router/resources.mjs';
 import {createP2pTransport} from './p2p-transport.mjs';
+import {workersDir,workerBoard,workerJob} from './worker-board.mjs';
 
 export function authorized(header, token) {
   if(typeof token!=='string'||token.length<24)return false;
@@ -127,6 +128,9 @@ export function createGateway(config,localAdapter) {
         res.writeHead(200,{'Content-Type':'application/vnd.android.package-archive','Content-Length':fs.statSync(apk).size,'Cache-Control':'no-store'});
         const stream=fs.createReadStream(apk);stream.on('error',()=>res.destroy());res.on('close',()=>stream.destroy());stream.pipe(res);return;
       }
+      // Read-only Worker board for the phone; the engine in the Agent service owns all writes.
+      if(req.method==='GET'&&u.pathname==='/api/workers'){if(!ownerAuthorized)return json(res,403,{error:'仅限本机所有者'});return json(res,200,workerBoard(workersDir(config)));}
+      if(req.method==='GET'&&u.pathname==='/api/workers/job'){if(!ownerAuthorized)return json(res,403,{error:'仅限本机所有者'});const j=workerJob(workersDir(config),u.searchParams.get('id'));return j?json(res,200,j):json(res,404,{error:'任务不存在'});}
       if(req.method==='GET'&&u.pathname==='/api/devices')return json(res,200,{devices:[...devices.values()],connectedPhones:clients.size});
       if(req.method==='GET'&&u.pathname==='/api/tools'){
         const all=[];await Promise.all([...adapters.keys()].map(async id=>{try{for(const t of await call(id,'tools',{}))all.push({...t,deviceId:id});}catch{}}));return json(res,200,{tools:all});
